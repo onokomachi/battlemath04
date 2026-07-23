@@ -6,6 +6,7 @@ import { Swords, Trophy, Skull, Zap, Heart, Info, X } from '../ui/Icons';
 import { buildTerrainCostMap, findPathWithTerrain, TerrainCostMap } from '../../utils/aiEngine';
 import { SeededRNG } from '../../utils/random';
 import { TerrainLayer } from './TerrainLayer';
+import { InBattleQuiz } from './InBattleQuiz';
 import { sfx } from '../../utils/audioEngine';
 import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore';
 import { useArmyStore } from '../../store/useArmyStore';
@@ -183,6 +184,8 @@ interface Props {
   playerDeployments?: import('../../types').DeployedBuilding[];
   battleMap?: import('../../types').BattleMap;
   loadout?: import('../../types').BattleLoadout;
+  /** 出撃前に選んだ出題範囲（戦闘中クイズで使う。空なら「といて⚡」は無効） */
+  quizSubtopics?: string[];
   onEndBattle: (win: boolean, loot: { gold: number }) => void;
 }
 
@@ -191,6 +194,7 @@ export const BattleScene: React.FC<Props> = ({
   defenderBuildings,
   playerDeployments = [],
   battleMap,
+  quizSubtopics = [],
   onEndBattle,
 }) => {
   const [entities, setEntities] = useState<BattleEntity[]>([]);
@@ -214,7 +218,8 @@ export const BattleScene: React.FC<Props> = ({
   const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
   const [evidencePanelOpen, setEvidencePanelOpen] = useState(false);
 
-  const [battlePaused] = useState(false);
+  const [battlePaused, setBattlePaused] = useState(false);
+  const [quizOpen, setQuizOpen] = useState(false);
   const [selectedOrderTroopId, setSelectedOrderTroopId] = useState<string | null>(null);
   const terrainCostsRef = useRef<TerrainCostMap>(new Map());
 
@@ -435,7 +440,7 @@ export const BattleScene: React.FC<Props> = ({
     const now = Date.now();
     if (now - (deployCdRef.current[selectedTroopId] ?? 0) < cd) return; // クールダウン中
     if (gold < cost) {
-      setTriggerMessage('💰 ゴールドがたりない！ 問題を解くか、待ってためよう');
+      setTriggerMessage('⚡ エナジーがたりない！ 問題を解くか、待ってためよう');
       setTimeout(() => setTriggerMessage(null), 1600);
       return;
     }
@@ -465,7 +470,7 @@ export const BattleScene: React.FC<Props> = ({
     if (buildMode !== null) {
       const bCost = IN_BATTLE_BUILD_COSTS[buildMode] ?? 999;
       if (Math.floor(gold) < bCost) {
-        setTriggerMessage('💰 ゴールドがたりない！');
+        setTriggerMessage('⚡ エナジーがたりない！');
         setTimeout(() => setTriggerMessage(null), 1400);
         setBuildMode(null);
         return;
@@ -507,7 +512,7 @@ export const BattleScene: React.FC<Props> = ({
       setGold(g => g - bCost);
       setEntities(prev => [...prev, newBuilding]);
       sfx.tap();
-      setTriggerMessage(`🏗️ ${BUILDING_STATS[buildMode].name}を建設した！（${bCost}💰）`);
+      setTriggerMessage(`🏗️ ${BUILDING_STATS[buildMode].name}を建設した！（${bCost}⚡）`);
       setTimeout(() => setTriggerMessage(null), 1600);
       setBuildMode(null);
       return;
@@ -1102,6 +1107,19 @@ export const BattleScene: React.FC<Props> = ({
          .animate-ping-slow {
            animation: pulse-ring 2s infinite ease-in-out;
          }
+         @keyframes cw-aura-spin {
+           0% { transform: rotate(0deg) scale(1.7); }
+           100% { transform: rotate(360deg) scale(1.7); }
+         }
+         .cw-battle-aura {
+           position: absolute; inset: 0; pointer-events: none; z-index: 0; opacity: 0.30;
+           background: conic-gradient(from 0deg at 50% 50%,
+             rgba(37,99,235,0) 0%, rgba(37,99,235,0.55) 18%, rgba(2,4,12,0) 34%,
+             rgba(239,68,68,0.55) 62%, rgba(2,4,12,0) 80%, rgba(37,99,235,0) 100%);
+           animation: cw-aura-spin 26s linear infinite;
+           filter: blur(34px);
+         }
+         @media (prefers-reduced-motion: reduce) { .cw-battle-aura { animation: none; } }
          .building-3d {
            box-shadow:
              inset -3px -3px 6px rgba(0,0,0,0.5),
@@ -1123,9 +1141,18 @@ export const BattleScene: React.FC<Props> = ({
           </div>
           
           <div className="flex gap-2">
+            {quizSubtopics.length > 0 && (
+              <button
+                onClick={() => { setBattlePaused(true); setQuizOpen(true); }}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#22d3ee]/50 bg-[#22d3ee]/10 text-[#22d3ee] text-xs font-bold animate-pulse"
+                style={{ fontFamily: 'Orbitron, monospace' }}
+              >
+                📚 といて⚡
+              </button>
+            )}
             <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#facc15]/50 bg-[#facc15]/10"
               style={{ fontFamily: 'Orbitron, monospace' }}>
-              <span className="text-base">💰</span>
+              <span className="text-base">⚡</span>
               <span className="text-[#facc15] font-bold text-sm">{Math.floor(gold)}</span>
             </div>
             <button
@@ -1156,6 +1183,8 @@ export const BattleScene: React.FC<Props> = ({
            backgroundColor: '#0a0e1a',
          }}
        >
+        {/* 青⇄赤の回転オーラ（CAT-WARS 世界観の動的バックドロップ） */}
+        <div className="cw-battle-aura" />
         <PinchZoomLayer>
           {/* ISOMETRIC CONTAINER */}
           <div
@@ -1538,7 +1567,7 @@ export const BattleScene: React.FC<Props> = ({
                  <p className="text-sm text-gray-300 mb-4 leading-relaxed">敵基地を全壊させ、戦利品を持ち帰ることに成功しました！</p>
                  <LevelUpSummary events={levelUps} />
                  <Button className="w-full mt-2" size="lg" onClick={() => onEndBattle(true, loot)}>
-                   戦利品を獲得して帰還 (💰{loot.gold}){hasBuff('DOUBLE_LOOT') && ' ×2!'}
+                   戦利品を獲得して帰還 (💠{loot.gold} クレジット){hasBuff('DOUBLE_LOOT') && ' ×2!'}
                  </Button>
                </div>
             ) : (
@@ -1566,7 +1595,7 @@ export const BattleScene: React.FC<Props> = ({
              className="flex-1 py-2 text-xs font-bold rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee] disabled:opacity-30"
              style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
            >
-             💊 ヒール補充 (60💰)
+             💊 ヒール補充 (60⚡)
            </button>
            <button
              onClick={() => { if (gold >= 80) { setGold(g => g - 80); setSpellCounts(s => ({ ...s, RAGE: s.RAGE + 1 })); } }}
@@ -1574,7 +1603,7 @@ export const BattleScene: React.FC<Props> = ({
              className="flex-1 py-2 text-xs font-bold rounded-lg border border-[#fb923c]/40 bg-[#fb923c]/10 text-[#fb923c] disabled:opacity-30"
              style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
            >
-             😤 レイジ補充 (80💰)
+             😤 レイジ補充 (80⚡)
            </button>
          </div>
 
@@ -1639,7 +1668,7 @@ export const BattleScene: React.FC<Props> = ({
                         if (unlockCharacterToday(troop.id)) {
                           sfx.correct();
                         } else {
-                          setTriggerMessage('⭐ デイリースターが15個たりない！まず問題をこう！');
+                          setTriggerMessage('⚡ エナジーが15たりない！まず「といて⚡」で問題をとこう！');
                           setTimeout(() => setTriggerMessage(null), 2000);
                         }
                         return;
@@ -1655,7 +1684,7 @@ export const BattleScene: React.FC<Props> = ({
                        style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'crisp-edges' }}
                        draggable={false} />
                      <span className="text-[8px] font-bold text-gray-300 leading-none truncate w-full text-center px-0.5">{formName}</span>
-                     <span className="text-[9px] font-black text-[#facc15] leading-none mt-0.5" style={{ fontFamily: 'Orbitron, monospace' }}>{cost}💰</span>
+                     <span className="text-[9px] font-black text-[#facc15] leading-none mt-0.5" style={{ fontFamily: 'Orbitron, monospace' }}>{cost}⚡</span>
                      {tr > 0 && (
                        <span className="absolute -top-1.5 -left-1.5 bg-[#ef4444] text-white text-[8px] font-black px-1 rounded-full border border-white">+{tr}</span>
                      )}
@@ -1673,7 +1702,7 @@ export const BattleScene: React.FC<Props> = ({
                      {!isCharUnlocked(troop.id) && (
                        <div className="absolute inset-0 rounded-xl bg-black/70 flex flex-col items-center justify-center gap-0.5">
                          <span className="text-base">🔒</span>
-                         <span className="text-[8px] text-[#facc15] font-bold">15⭐</span>
+                         <span className="text-[8px] text-[#facc15] font-bold">15⚡</span>
                        </div>
                      )}
                   </button>
@@ -1702,7 +1731,7 @@ export const BattleScene: React.FC<Props> = ({
                 >
                   <span className="text-lg">⬆️</span>
                   <span className="text-[8px] font-bold leading-none">強化</span>
-                  <span className="text-[9px] font-black text-[#facc15] mt-0.5">{rankCost}💰</span>
+                  <span className="text-[9px] font-black text-[#facc15] mt-0.5">{rankCost}⚡</span>
                 </button>
               );
             })()}
@@ -1735,7 +1764,7 @@ export const BattleScene: React.FC<Props> = ({
                  }`}
                >
                  <span className="text-lg">{BUILDING_STATS[type].icon || '🧱'}</span>
-                 <span className="text-[9px] font-bold text-[#facc15] leading-none" style={{ fontFamily: 'Orbitron, monospace' }}>{bCost}💰</span>
+                 <span className="text-[9px] font-bold text-[#facc15] leading-none" style={{ fontFamily: 'Orbitron, monospace' }}>{bCost}⚡</span>
                </button>
              );
            })}
@@ -1822,6 +1851,16 @@ export const BattleScene: React.FC<Props> = ({
 
            </div>
          </div>
+       )}
+
+       {/* 戦闘中クイズ（出撃前に選んだ範囲からランダム出題 → ⚡エナジー獲得） */}
+       {quizOpen && (
+         <InBattleQuiz
+           subtopics={quizSubtopics}
+           reward={40}
+           onReward={(en) => setGold(g => Math.min(9999, g + en))}
+           onClose={() => { setQuizOpen(false); setBattlePaused(false); }}
+         />
        )}
 
     </div>

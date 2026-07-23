@@ -51,8 +51,8 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
     if (!placing) return;
     const stats = BUILDING_STATS[placing];
     if (!canPlaceAt(placing, x, y)) { flash('⛔ ここには置けないよ'); return; }
-    if (resources.gold < stats.cost.gold) { flash('💰 ゴールドがたりない！問題を解いてためよう'); return; }
-    if (!spendResources(stats.cost.gold)) { flash('💰 ゴールドがたりない！'); return; }
+    if (resources.gold < stats.cost.gold) { flash('💠 クレジットがたりない！問題を解いてためよう'); return; }
+    if (!spendResources(stats.cost.gold)) { flash('💠 クレジットがたりない！'); return; }
     const nb: Building = {
       id: `b-${Date.now()}-${x}-${y}`,
       type: placing,
@@ -64,7 +64,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
     };
     setGameState(prev => ({ ...prev, buildings: [...prev.buildings, nb] }));
     sfx.tap();
-    flash(`🏗️ ${stats.name}を建設！（-${stats.cost.gold}💰）`);
+    flash(`🏗️ ${stats.name}を建設！（-${stats.cost.gold}💠）`);
   };
 
   const remove = (b: Building) => {
@@ -76,7 +76,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
       resources: { ...prev.resources, gold: Math.min(prev.resources.maxGold, prev.resources.gold + refund) },
     }));
     sfx.tap();
-    flash(`♻️ 撤去して ${refund}💰 もどってきた`);
+    flash(`♻️ 撤去して ${refund}💠 もどってきた`);
   };
 
   return (
@@ -88,7 +88,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
         <h2 className="text-[#38bdf8] font-bold text-base" style={fontMono}>拠点づくり</h2>
         <span className="ml-auto flex items-center gap-1 px-3 py-1 rounded-full"
           style={{ background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.35)' }}>
-          <span>💰</span>
+          <span>💠</span>
           <span className="text-[#facc15] font-bold" style={fontMono}>{Math.floor(resources.gold)}</span>
         </span>
       </div>
@@ -170,7 +170,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
                 <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.svg`} alt={s.name}
                   style={{ width: 34, height: 34, objectFit: 'contain' }} draggable={false} />
                 <span className="text-[10px] text-white/80 mt-1 leading-none">{s.name}</span>
-                <span className="text-[10px] font-bold text-[#facc15] mt-0.5" style={fontMono}>{s.cost.gold}💰</span>
+                <span className="text-[10px] font-bold text-[#facc15] mt-0.5" style={fontMono}>{s.cost.gold}💠</span>
               </button>
             );
           })}

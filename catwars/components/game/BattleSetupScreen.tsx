@@ -6,7 +6,7 @@ import { DailyBuffsPanel } from '../learn/DailyBuffsPanel';
 import { useProgressStore } from '../../store/useProgressStore';
 import { sfx } from '../../utils/audioEngine';
 
-// 戦闘前ショップ：⭐デイリースターで施設を配置。freeAllow までは無料（バランス床）。
+// 戦闘前ショップ：⚡エナジーで施設を配置。freeAllow までは無料（バランス床）。
 const FACILITY_SHOP: { type: BuildingType; starCost: number; freeAllow: number }[] = [
   { type: BuildingType.WALL,      starCost: 2,  freeAllow: 4 },
   { type: BuildingType.CANNON,    starCost: 8,  freeAllow: 1 },
@@ -83,12 +83,12 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
       ]);
       setTownHallPlaced(true);
     } else {
-      // ⭐コスト（freeAllow を超えたぶんだけ消費）
+      // ⚡コスト（freeAllow を超えたぶんだけ消費）
       const rank = deployments.filter(d => d.type === buildingToPlace).length;
       const cost = costForRank(buildingToPlace, rank);
       if (cost > 0 && !spendDailyStars(cost)) {
         sfx.incorrect();
-        return; // ⭐不足
+        return; // ⚡不足
       }
       sfx.tap();
       setDeployments(prev => [...prev, newDeployment]);
@@ -101,7 +101,7 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
     if (d.type === BuildingType.TOWN_HALL) {
       setTownHallPlaced(false);
     } else {
-      // 撤去したぶんの⭐を払い戻し
+      // 撤去したぶんの⚡を払い戻し
       const typeList = deployments.filter(dep => dep.type === d.type);
       const idx = typeList.findIndex(dep => dep.x === d.x && dep.y === d.y);
       const refund = costForRank(d.type, idx);
@@ -112,7 +112,7 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
 
   // Building picker options（戦闘前ショップ）
   const pickerOptions: BuildingType[] = [BuildingType.TOWN_HALL, ...FACILITY_SHOP.map(f => f.type)];
-  // 選択中タイプの「次に置くときの⭐コスト」
+  // 選択中タイプの「次に置くときの⚡コスト」
   const nextCostFor = (type: BuildingType): number => {
     if (type === BuildingType.TOWN_HALL) return 0;
     const rank = deployments.filter(d => d.type === type).length;
@@ -123,22 +123,30 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
   const CELL = 30;
 
   return (
-    <div className="min-h-[100dvh] h-[100dvh] flex flex-col bg-[#0a0e1a] overflow-y-auto">
+    <div className="min-h-[100dvh] h-[100dvh] flex flex-col overflow-y-auto"
+      style={{ background: 'radial-gradient(120% 80% at 15% 0%, rgba(37,99,235,0.22), transparent 55%), radial-gradient(120% 80% at 85% 100%, rgba(239,68,68,0.20), transparent 55%), #060a18' }}>
       {/* Header */}
-      <div className="flex items-center gap-3 p-4 border-b border-white/10">
+      <div className="flex items-center gap-3 p-4 border-b border-white/10"
+        style={{ background: 'linear-gradient(90deg, rgba(37,99,235,0.12), rgba(239,68,68,0.12))' }}>
         <button
           onClick={onBack}
-          className="text-white/50 hover:text-white text-sm"
+          className="text-white/60 hover:text-white text-sm"
           style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
         >
           ← もどる
         </button>
         <h2
-          className="text-[#22d3ee] font-bold text-base"
-          style={{ fontFamily: 'Orbitron, monospace' }}
+          className="font-black text-lg tracking-wide"
+          style={{
+            fontFamily: 'Orbitron, monospace',
+            background: 'linear-gradient(90deg,#60a5fa,#e2e8f0,#f87171)',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+            filter: 'drop-shadow(0 0 10px rgba(96,165,250,0.5))',
+          }}
         >
-          作戦立案
+          ⚔ 作戦立案
         </h2>
+        <span className="ml-auto text-[10px] text-white/40 tracking-widest" style={{ fontFamily: 'Orbitron, monospace' }}>code:CAT-WARS</span>
       </div>
 
       {/* Map selector */}
@@ -182,7 +190,7 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
         <span className="text-white/40"><span className="text-[#a3e635]">緑ゾーン</span>に コア（🏰）と拠点施設を構築しよう</span>
         <span className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full"
           style={{ background: 'rgba(250,204,21,0.1)', border: '1px solid rgba(250,204,21,0.3)' }}>
-          <span>⭐</span>
+          <span>⚡</span>
           <span className="text-[#facc15] font-bold" style={{ fontFamily: 'Orbitron, monospace' }}>{dailyStars}</span>
         </span>
       </div>
@@ -328,7 +336,7 @@ export const BattleSetupScreen: React.FC<Props> = ({ loadout, onStartBattle, onB
                   {BUILDING_STATS[type].name}
                 </span>
                 <span className="text-[9px] font-bold mt-0.5" style={{ fontFamily: 'Orbitron, monospace', color: isTH || cost === 0 ? '#a3e635' : '#facc15' }}>
-                  {isTH ? '必須' : cost === 0 ? 'むりょう' : `${cost}⭐`}
+                  {isTH ? '必須' : cost === 0 ? 'むりょう' : `${cost}⚡`}
                 </span>
               </button>
             );

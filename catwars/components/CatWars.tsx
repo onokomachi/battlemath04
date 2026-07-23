@@ -8,6 +8,7 @@ import { computeBattleLoadout } from '../utils/battleLoadout';
 import { BATTLE_MAPS } from '../data/battleMaps';
 import { BattleScene } from './game/BattleScene';
 import { BattleSetupScreen } from './game/BattleSetupScreen';
+import { RangeSelect } from './game/RangeSelect';
 import { ArmyRosterScreen } from './army/ArmyRosterScreen';
 import { DailyBuffsPanel } from './learn/DailyBuffsPanel';
 import { ExchangePanel } from './learn/ExchangePanel';
@@ -16,7 +17,7 @@ import { BaseBuilder } from './BaseBuilder';
 const font = { fontFamily: '"M PLUS Rounded 1c", sans-serif' };
 const fontMono = { fontFamily: 'Orbitron, monospace' };
 
-type View = 'home' | 'base' | 'army' | 'setup' | 'battle' | 'buffs' | 'mercs';
+type View = 'home' | 'base' | 'army' | 'range' | 'setup' | 'battle' | 'buffs' | 'mercs';
 
 interface Props {
   onExit: () => void;
@@ -28,10 +29,11 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   const { resources, buildings, troops, lastTick, addResources, setGameState } = usePlayerStore();
   const { selectedMapId, playerDeployments, commitPlan, resetBattleSession } = useBattleSetupStore();
   const {
-    stars, getTodayDailyStars, dailyStreak, todayAnswered, dailyGoal, updateDailyStreak,
+    getTodayDailyStars, dailyStreak, todayAnswered, dailyGoal, updateDailyStreak,
   } = useProgressStore();
 
   const [enemyLayout, setEnemyLayout] = useState<{ type: BuildingType; x: number; y: number }[]>([]);
+  const [quizSubtopics, setQuizSubtopics] = useState<string[]>([]);
   const gameState: GameState = { resources, buildings, troops, lastTick };
   const loadout = useMemo(() => computeBattleLoadout(buildings), [buildings]);
   const dailyStars = getTodayDailyStars();
@@ -59,6 +61,15 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   if (view === 'base') return <BaseBuilder onBack={() => setView('home')} />;
   if (view === 'army') return <ArmyRosterScreen onBack={() => setView('home')} />;
 
+  if (view === 'range') {
+    return (
+      <RangeSelect
+        onBack={() => setView('home')}
+        onConfirm={(subs) => { setQuizSubtopics(subs); setView('setup'); }}
+      />
+    );
+  }
+
   if (view === 'setup') {
     return (
       <BattleSetupScreen
@@ -83,6 +94,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
         playerDeployments={playerDeployments}
         battleMap={map}
         loadout={loadout}
+        quizSubtopics={quizSubtopics}
         onEndBattle={handleEndBattle}
       />
     );
@@ -106,9 +118,8 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
         <button onClick={onExit} className="text-white/60 hover:text-white text-sm">← メニュー</button>
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {dailyStreak >= 1 && <StatChip icon="🔥" value={`${dailyStreak}`} color="#fb923c" />}
-          <StatChip icon="💰" value={Math.floor(resources.gold)} color="#facc15" />
-          <StatChip icon="⭐" value={dailyStars} color="#38bdf8" />
-          <StatChip icon="🌟" value={stars} color="#a3e635" />
+          <StatChip icon="💠" value={Math.floor(resources.gold)} color="#38bdf8" />
+          <StatChip icon="⚡" value={dailyStars} color="#facc15" />
         </div>
       </div>
 
@@ -121,7 +132,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
       {/* Daily goal */}
       <div className="px-5">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-white/60 text-[11px]">きょうの学習で 💰 と ⭐ がたまる</span>
+          <span className="text-white/60 text-[11px]">きょうの学習で 💠クレジット と ⚡エナジー がたまる</span>
           <span className="text-[#38bdf8] text-[11px]" style={fontMono}>{todayAnswered}/{dailyGoal}問</span>
         </div>
         <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
@@ -132,13 +143,13 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
 
       {/* Big actions */}
       <div className="grid grid-cols-2 gap-3 px-4 pt-4">
-        <HubButton icon="⚔️" label="出撃！" sub="敵の拠点を襲撃" color="#ef4444"
-          onClick={() => { resetBattleSession(); setView('setup'); }} big />
-        <HubButton icon="🏰" label="拠点づくり" sub="💰で施設を建設" color="#38bdf8"
+        <HubButton icon="⚔️" label="出撃！" sub="範囲をえらんで敵拠点を襲撃" color="#ef4444"
+          onClick={() => { resetBattleSession(); setView('range'); }} big />
+        <HubButton icon="🏰" label="拠点づくり" sub="💠クレジットで施設を建設" color="#38bdf8"
           onClick={() => setView('base')} />
         <HubButton icon="🐱" label="ネコ図鑑" sub="部隊のレベル・進化" color="#a3e635"
           onClick={() => setView('army')} />
-        <HubButton icon="⚡" label="出撃バフ" sub="⭐で今日の戦力UP" color="#facc15"
+        <HubButton icon="✨" label="出撃バフ" sub="⚡エナジーで今日の戦力UP" color="#facc15"
           onClick={() => setView('buffs')} />
       </div>
 
@@ -174,7 +185,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
       <div className="px-4 pt-3 pb-8">
         <button onClick={() => setView('mercs')}
           className="w-full py-3 rounded-xl border border-[#a3e635]/40 text-[#a3e635] text-sm font-bold hover:bg-[#a3e635]/10 transition-all active:scale-95">
-          🌟 傭兵召集（レアな宇宙ネコを解放）
+          💠 傭兵召集（クレジットでレアな宇宙ネコを解放）
         </button>
       </div>
 

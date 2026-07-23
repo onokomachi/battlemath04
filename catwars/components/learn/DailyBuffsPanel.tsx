@@ -58,7 +58,7 @@ export const DailyBuffsPanel: React.FC<Props> = ({ compact }) => {
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-bold" style={{ color: '#22d3ee', fontFamily: 'Orbitron, monospace' }}>きょうのバフ</span>
           <div className="flex items-center gap-1">
-            <span className="text-sm">⭐</span>
+            <span className="text-sm">⚡</span>
             <span className="text-[#facc15] font-bold text-sm" style={{ fontFamily: 'Orbitron, monospace' }}>{currentDS}</span>
             <span className="text-white/40 text-xs">デイリー</span>
           </div>
@@ -89,9 +89,9 @@ export const DailyBuffsPanel: React.FC<Props> = ({ compact }) => {
                   ? <span className="text-[9px] text-[#facc15] font-bold">大✓最強</span>
                   : lv > 0
                     ? <span className="text-[9px] font-bold" style={{ color: LEVEL_COLORS[lv as 1|2|3] }}>
-                        {LEVEL_LABELS[lv as 1|2|3]}✓ → {LEVEL_LABELS[(lv+1) as 1|2|3] ?? ''}({nextCost}⭐)
+                        {LEVEL_LABELS[lv as 1|2|3]}✓ → {LEVEL_LABELS[(lv+1) as 1|2|3] ?? ''}({nextCost}⚡)
                       </span>
-                    : <span className="text-[9px] font-bold" style={{ color: tierColor }}>{nextCost}⭐(小)</span>
+                    : <span className="text-[9px] font-bold" style={{ color: tierColor }}>{nextCost}⚡(小)</span>
                 }
               </button>
             );
@@ -106,10 +106,10 @@ export const DailyBuffsPanel: React.FC<Props> = ({ compact }) => {
     <div className="w-full" style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}>
       <div className="flex items-center gap-2 mb-3 p-3 rounded-xl"
         style={{ background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.2)' }}>
-        <span className="text-2xl">⭐</span>
+        <span className="text-2xl">⚡</span>
         <div className="flex-1">
           <div className="text-[#facc15] font-bold text-lg" style={{ fontFamily: 'Orbitron, monospace' }}>{currentDS}</div>
-          <div className="text-white/50 text-xs">デイリースター（きょうかぎり）</div>
+          <div className="text-white/50 text-xs">エナジー（きょうかぎり）</div>
         </div>
         <div className="text-right">
           <div className="text-white/70 text-xs">本日 <span className="text-[#a3e635] font-bold">{todayCount}</span>問</div>
@@ -196,7 +196,7 @@ export const DailyBuffsPanel: React.FC<Props> = ({ compact }) => {
                           }}>
                           <span className="text-[9px] text-white/60 leading-none">{lv > 0 ? `${LEVEL_LABELS[lv as 1|2|3]}→${LEVEL_LABELS[(lv+1) as 1|2|3]}` : '小から'}</span>
                           <span className="text-[#facc15] font-bold text-sm" style={{ fontFamily: 'Orbitron, monospace' }}>{nextCost}</span>
-                          <span className="text-sm leading-none">⭐</span>
+                          <span className="text-sm leading-none">⚡</span>
                         </button>
                       )}
                     </div>
@@ -211,7 +211,7 @@ export const DailyBuffsPanel: React.FC<Props> = ({ compact }) => {
       <p className="text-center text-xs mt-3" style={{ color: activeBuffs.length ? '#a3e635' : 'rgba(255,255,255,0.4)' }}>
         {activeBuffs.length > 0
           ? `✅ ${activeBuffs.length}つのバフが有効 — きょうの戦闘に反映されます`
-          : '⭐ を使ってバフを有効にしよう！'}
+          : '⚡ を使ってバフを有効にしよう！'}
       </p>
     </div>
   );

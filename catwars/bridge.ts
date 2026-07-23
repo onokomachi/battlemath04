@@ -3,20 +3,20 @@
 // CAT-WARS 側の通貨・部隊育成へ「加算的に」報酬を流し込む。
 // 既存の mathPoints(MP) システムには一切手を触れない（後戻り可能・低リスク）。
 //
-// 3層通貨設計（詳細は docs/CATWARS_DESIGN.md）:
-//   💰 ゴールド   … ソフト通貨。建設・出撃の元手。正解でどんどん貯まる。
-//   ⭐ デイリースター … 出撃バフ／防衛施設配置の元手（当日かぎり）。
-//   🌟 スーパースター … 希少。レアな宇宙ネコの解放。まれにドロップ。
-//   部隊XP        … そのネコが強くなる。学習でも薄く育ち、戦闘で大きく育つ。
+// 2通貨設計（詳細は docs/CATWARS_DESIGN.md）:
+//   💠 クレジット(CR) … 永続通貨。建設・強化・レアネコ解放の元手。正解でコツコツ貯まる。
+//   ⚡ エナジー(EN)   … 当日リセット。出撃バフ／防衛配置／戦闘の元手。今日の学習ぶんは今日つかう。
+//   部隊XP           … 通貨ではなく自動成長。学習で薄く・戦闘で厚く育ち、レベル→進化する。
+//   （内部の store フィールド名 resources.gold=CR / dailyStars=EN は後方互換のため据え置き）
 
 import { usePlayerStore } from './store/usePlayerStore';
 import { useProgressStore } from './store/useProgressStore';
 import { useArmyStore } from './store/useArmyStore';
 import { CHARACTERS } from './data/characters';
 
-export const GOLD_PER_CORRECT = 12;       // 正解1問あたりのゴールド
-export const DAILY_STAR_PER_CORRECT = 1;  // 正解1問あたりのデイリースター
-export const STUDY_XP_PER_CORRECT = 4;    // 正解1問あたり、各スターター系統へ配分するXP
+export const CREDIT_PER_CORRECT = 12;   // 正解1問あたりのクレジット(CR)
+export const ENERGY_PER_CORRECT = 2;    // 正解1問あたりのエナジー(EN・当日)
+export const STUDY_XP_PER_CORRECT = 4;  // 正解1問あたり、各スターター系統へ配分するXP
 
 const STARTER_IDS = CHARACTERS.filter(c => c.isStarter).map(c => c.id);
 
@@ -30,12 +30,10 @@ export function grantStudyReward(isCorrect: boolean, unitId?: string): void {
   try { progress.recordAnswer(unitId ?? 'study', isCorrect); } catch { /* noop */ }
   if (!isCorrect) return;
 
-  // 💰 ゴールド
-  usePlayerStore.getState().addResources(GOLD_PER_CORRECT);
-  // ⭐ デイリースター（バフ・施設の元手）
-  progress.addDailyStars(DAILY_STAR_PER_CORRECT);
-  // 🌟 まれにスーパースター
-  progress.rollSuperStar();
+  // 💠 クレジット（永続・建設/解放の元手）
+  usePlayerStore.getState().addResources(CREDIT_PER_CORRECT);
+  // ⚡ エナジー（当日・バフ/防衛/戦闘の元手）
+  progress.addDailyStars(ENERGY_PER_CORRECT);
   // 学習でネコがすこし育つ（スターター系統へ薄く配分。主XP源は戦闘）
   const army = useArmyStore.getState();
   for (const id of STARTER_IDS) army.addXp(id, STUDY_XP_PER_CORRECT);
@@ -44,6 +42,6 @@ export function grantStudyReward(isCorrect: boolean, unitId?: string): void {
 /** まとめ報酬（本番テスト完了時など、複数問ぶんをまとめて付与したい場面用） */
 export function grantBulkReward(correctCount: number): void {
   if (correctCount <= 0) return;
-  usePlayerStore.getState().addResources(GOLD_PER_CORRECT * correctCount);
-  useProgressStore.getState().addDailyStars(Math.round(DAILY_STAR_PER_CORRECT * correctCount));
+  usePlayerStore.getState().addResources(CREDIT_PER_CORRECT * correctCount);
+  useProgressStore.getState().addDailyStars(Math.round(ENERGY_PER_CORRECT * correctCount));
 }
