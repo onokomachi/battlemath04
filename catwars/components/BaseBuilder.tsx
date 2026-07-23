@@ -123,7 +123,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
                     <div style={{
                       position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      <img src={`/assets/sprites/${occ!.type.toLowerCase().replace(/_/g, '-')}.svg`}
+                      <img src={`/assets/sprites/${occ!.type.toLowerCase().replace(/_/g, '-')}.png`}
                         alt={occ!.type}
                         style={{
                           width: BUILDING_STATS[occ!.type].width * CELL - 4,
@@ -167,7 +167,7 @@ export const BaseBuilder: React.FC<Props> = ({ onBack }) => {
                   background: sel ? 'rgba(56,189,248,0.18)' : 'rgba(255,255,255,0.04)',
                   opacity: poor && !sel ? 0.45 : 1,
                 }}>
-                <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.svg`} alt={s.name}
+                <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.png`} alt={s.name}
                   style={{ width: 34, height: 34, objectFit: 'contain' }} draggable={false} />
                 <span className="text-[10px] text-white/80 mt-1 leading-none">{s.name}</span>
                 <span className="text-[10px] font-bold text-[#facc15] mt-0.5" style={fontMono}>{s.cost.gold}💠</span>

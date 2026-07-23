@@ -589,6 +589,9 @@ export const BattleScene: React.FC<Props> = ({
         if (e.hp <= 0 && e.team === 'DEFENDER') {
           goldKillRef.current += e.type === 'BUILDING' ? 30 : 8;
         }
+        if (e.hp <= 0 && e.type === 'BUILDING') {
+          sfx.explosion();
+        }
       });
       const nextEntities = mapped.filter(e => e.hp > 0);
 
@@ -777,6 +780,7 @@ export const BattleScene: React.FC<Props> = ({
                   type: (isTesla ? 'TESLA' : 'CANNON') as 'TESLA' | 'CANNON'
                 };
                 setProjectiles(prev => [...prev, newProj]);
+                sfx.laserShot();
 
                 const prevHp = target.hp;
                 target.hp -= entity.damage;
@@ -885,6 +889,7 @@ export const BattleScene: React.FC<Props> = ({
                     bestTarget.hp -= currentDamage;
                     if (bestTarget.hp < prevHp) newDamagedEntities.add(bestTarget.id);
                     entity.lastAttack = now;
+                    sfx.hit();
                     // 攻撃タイプ別エフェクトを発生（遠距離=BOLT, 巨人/ボス=SHOCK, それ以外=斬撃）
                     const sub = entity.subType as string;
                     const isRanged = entity.attackRange >= 2;
@@ -964,6 +969,7 @@ export const BattleScene: React.FC<Props> = ({
                               wallCol.hp -= currentDamage;
                               if (wallCol.hp < prevHp) newDamagedEntities.add(wallCol.id);
                               entity.lastAttack = now;
+                              sfx.hit();
                           }
                           return;
                      }
@@ -1419,7 +1425,7 @@ export const BattleScene: React.FC<Props> = ({
                         {e.type === 'BUILDING' ? (
                           <div className="flex flex-col items-center w-full h-full relative">
                             <img
-                              src={`/assets/sprites/${(e.subType as string).toLowerCase().replace(/_/g, '-')}.svg`}
+                              src={`/assets/sprites/${(e.subType as string).toLowerCase().replace(/_/g, '-')}.png`}
                               alt={e.subType as string}
                               style={{
                                 width: '100%', height: '100%',
@@ -1656,7 +1662,7 @@ export const BattleScene: React.FC<Props> = ({
                const baseStage = getStage(troop.id);
                const tr = tempRank[troop.id] ?? 0;
                const formName = fam ? fam.forms[baseStage - 1].name : troop.name;
-               const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.svg`;
+               const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.png`;
                const cost = fam ? Math.round(fam.cost.gold * (1 - buffVal('COST_REDUCTION') / 100)) : 0;
                const cdLeft = Math.max(0, (deployCdRef.current[troop.id] ?? 0) + (hasBuff('FAST_DEPLOY') ? Math.round(1500 * (1 - buffVal('FAST_DEPLOY') / 100)) : 1500) - Date.now());
                const affordable = Math.floor(gold) >= cost && cdLeft <= 0;
