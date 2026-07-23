@@ -25,6 +25,8 @@ export interface WeaknessReport {
   recommendation: string;
 }
 
+import { grantStudyReward } from '../catwars/bridge';
+
 const STORAGE_KEY = 'bm_category_stats';
 
 const getTodayStr = (): string => new Date().toISOString().slice(0, 10);
@@ -49,6 +51,8 @@ export const recordAttempt = (category: string, isCorrect: boolean): void => {
   if (isCorrect) stats[category].correct += 1;
   stats[category].lastAttempt = getTodayStr();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
+  // CAT-WARS 経済へ正解報酬を流す（練習/スピード/復習の全モード共通のシンク）
+  try { grantStudyReward(isCorrect, category); } catch { /* CAT-WARS未初期化でも学習は継続 */ }
 };
 
 /** 正答率によるステータス判定 */

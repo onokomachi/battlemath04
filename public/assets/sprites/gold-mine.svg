@@ -1,0 +1,15 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="met_gm" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2c3346"/><stop offset="0.5" stop-color="#1e2433"/><stop offset="1" stop-color="#141826"/></linearGradient><radialGradient id="core_gm" cx="0.5" cy="0.45" r="0.6"><stop offset="0" stop-color="#ffeaad"/><stop offset="0.6" stop-color="#ffcc33"/><stop offset="1" stop-color="#ffcc33" stop-opacity="0"/></radialGradient></defs>
+<path d="M20 86 L80 86 L86 68 L14 68 Z" fill="#141826" stroke="#0a0d16" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="24" y="40" width="52" height="32" rx="5" fill="url(#met_gm)" stroke="#0a0d16" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="50" cy="52" r="20" fill="#0c1322" stroke="#0a0d16" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="50" cy="52" r="20" fill="none" stroke="#ffcc33" stroke-width="2" opacity="0.85"/>
+<circle cx="50" cy="52" r="14" fill="url(#core_gm)"/>
+<circle cx="50" cy="52" r="6" fill="#ffcc33"/>
+<circle cx="50" cy="52" r="2.6" fill="#fff"/>
+<ellipse cx="50" cy="52" rx="18" ry="6" fill="none" stroke="#ffcc33" stroke-width="1.4" opacity="0.7"/>
+<ellipse cx="50" cy="52" rx="6" ry="18" fill="none" stroke="#ffcc33" stroke-width="1.4" opacity="0.5"/>
+<path d="M28 72 V62 M72 72 V62" fill="none" stroke="#ffcc33" stroke-width="1.6" stroke-linecap="round" opacity="0.9"/>
+<circle cx="28" cy="60" r="2" fill="#ffcc33"/>
+<circle cx="72" cy="60" r="2" fill="#ffcc33"/>
+</svg>
