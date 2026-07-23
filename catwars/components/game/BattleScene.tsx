@@ -589,6 +589,9 @@ export const BattleScene: React.FC<Props> = ({
         if (e.hp <= 0 && e.team === 'DEFENDER') {
           goldKillRef.current += e.type === 'BUILDING' ? 30 : 8;
         }
+        if (e.hp <= 0 && e.type === 'BUILDING') {
+          sfx.explosion();
+        }
       });
       const nextEntities = mapped.filter(e => e.hp > 0);
 
@@ -777,6 +780,7 @@ export const BattleScene: React.FC<Props> = ({
                   type: (isTesla ? 'TESLA' : 'CANNON') as 'TESLA' | 'CANNON'
                 };
                 setProjectiles(prev => [...prev, newProj]);
+                sfx.laserShot();
 
                 const prevHp = target.hp;
                 target.hp -= entity.damage;
@@ -885,6 +889,7 @@ export const BattleScene: React.FC<Props> = ({
                     bestTarget.hp -= currentDamage;
                     if (bestTarget.hp < prevHp) newDamagedEntities.add(bestTarget.id);
                     entity.lastAttack = now;
+                    sfx.hit();
                     // 攻撃タイプ別エフェクトを発生（遠距離=BOLT, 巨人/ボス=SHOCK, それ以外=斬撃）
                     const sub = entity.subType as string;
                     const isRanged = entity.attackRange >= 2;
@@ -964,6 +969,7 @@ export const BattleScene: React.FC<Props> = ({
                               wallCol.hp -= currentDamage;
                               if (wallCol.hp < prevHp) newDamagedEntities.add(wallCol.id);
                               entity.lastAttack = now;
+                              sfx.hit();
                           }
                           return;
                      }

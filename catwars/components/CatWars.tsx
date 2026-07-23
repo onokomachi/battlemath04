@@ -13,6 +13,7 @@ import { ArmyRosterScreen } from './army/ArmyRosterScreen';
 import { DailyBuffsPanel } from './learn/DailyBuffsPanel';
 import { ExchangePanel } from './learn/ExchangePanel';
 import { BaseBuilder } from './BaseBuilder';
+import { sfx } from '../utils/audioEngine';
 
 const font = { fontFamily: '"M PLUS Rounded 1c", sans-serif' };
 const fontMono = { fontFamily: 'Orbitron, monospace' };
@@ -207,7 +208,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
 const HubButton: React.FC<{
   icon: string; label: string; sub: string; color: string; onClick: () => void; big?: boolean;
 }> = ({ icon, label, sub, color, onClick, big }) => (
-  <button onClick={onClick}
+  <button onClick={() => { sfx.select(); onClick(); }}
     className={`relative overflow-hidden rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 ${big ? 'col-span-2 py-6' : 'py-5'}`}
     style={{ borderColor: `${color}`, background: `${color}18`, boxShadow: big ? `0 0 22px ${color}55` : `0 0 10px ${color}33` }}>
     <span className={big ? 'text-4xl' : 'text-3xl'}>{icon}</span>
