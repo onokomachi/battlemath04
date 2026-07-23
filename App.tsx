@@ -50,6 +50,8 @@ import { fetchLockedUnits } from './services/unitLockService';
 import { fetchAdminEmails } from './services/adminAccessService';
 import { getEquippedBackground, setEquippedBackground, badgeRatio, isBackgroundUnlocked, type BackgroundId } from './utils/backgroundUnlock';
 import BackgroundFX from './components/BackgroundFX';
+import CyberGradientBG from './components/CyberGradientBG';
+import { CatWars } from './catwars/components/CatWars';
 import MockTestMode from './components/MockTestMode';
 import LearningLogScreen from './components/LearningLogScreen';
 import {
@@ -1928,6 +1930,9 @@ const App: React.FC = () => {
           />
         );
 
+      case 'catwars':
+        return <CatWars onExit={() => setGameState('main_menu')} playerName={user?.displayName || 'あなた'} />;
+
       case 'gamemaster':
         return db ? (
           <GameMaster db={db} onClose={() => setGameState('login_screen')} />
@@ -1942,7 +1947,7 @@ const App: React.FC = () => {
 
   return (
     <main className="w-screen h-screen relative flex flex-col items-center justify-center font-sans">
-      <GravityBackground />
+      <CyberGradientBG />
       <BackgroundFX background={equippedBackground} />
       <div className="relative z-10 w-full h-full">
         {renderContent()}

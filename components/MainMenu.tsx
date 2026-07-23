@@ -228,27 +228,43 @@ const MainMenu: React.FC<MainMenuProps> = ({
 
       <div className="text-center mb-8 md:mb-16 relative">
         <div className="absolute -inset-20 bg-red-600/15 blur-[120px] rounded-full animate-pulse" />
-        <h1 className="text-4xl sm:text-6xl md:text-7xl font-black text-hologram mb-4 tracking-[0.02em] pr-[0.1em]">
-          Battle-Math:04
+        <h1 className="text-4xl sm:text-6xl md:text-7xl font-black text-hologram mb-2 tracking-[0.02em] pr-[0.1em]">
+          BattleMath:04
         </h1>
+        {/* サブタイトル: code:CAT-WARS を目立たせる */}
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full mb-3"
+          style={{
+            background: 'linear-gradient(90deg, rgba(37,99,235,0.18), rgba(239,68,68,0.18))',
+            border: '1px solid rgba(255,255,255,0.15)',
+            boxShadow: '0 0 24px rgba(37,99,235,0.35), 0 0 24px rgba(239,68,68,0.25)',
+          }}>
+          <span className="text-lg">🐱</span>
+          <span className="font-black tracking-[0.35em] text-lg sm:text-2xl"
+            style={{
+              fontFamily: 'Orbitron, monospace',
+              background: 'linear-gradient(90deg,#60a5fa,#e2e8f0,#f87171)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+            }}>
+            code:CAT-WARS
+          </span>
+        </div>
         <div className="flex items-center justify-center gap-6">
           <div className="h-[1px] w-20 bg-gradient-to-r from-transparent via-red-500 to-transparent" />
-          <p className="text-xs md:text-sm text-red-300 font-bold tracking-[0.3em] opacity-80">
-            4年生の算数マスターへの道
+          <p className="text-xs md:text-sm text-blue-200 font-bold tracking-[0.3em] opacity-80">
+            算数をきわめ ネコ軍団で せかいを制せ
           </p>
-          <div className="h-[1px] w-20 bg-gradient-to-l from-transparent via-red-500 to-transparent" />
+          <div className="h-[1px] w-20 bg-gradient-to-l from-transparent via-blue-400 to-transparent" />
         </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 w-full max-w-6xl px-4 sm:px-6">
         {[
-          { mode: 'deck_building' as GameState, label: 'バトル', desc: 'デッキを組んでCPUやプレイヤーと対戦', icon: '⚔', badge: 0 },
+          { mode: 'catwars' as GameState, label: 'CAT-WARS', desc: '問題を解いて拠点を築き ネコ軍団で襲撃！', icon: '🐱', badge: 0 },
           { mode: 'speed_duel_setup' as GameState, label: 'スピード', desc: 'デッキ不要！早押し勝負', icon: '⚡', badge: 0 },
           { mode: 'practice_mode' as GameState, label: '練習', desc: '分野別に問題を解いて実力アップ', icon: '📖', badge: 0 },
           { mode: 'review_mode' as GameState, label: '復習', desc: '間違えた問題を最適なタイミングで', icon: '🔁', badge: srsReviewCount },
           { mode: 'mock_test' as GameState, label: '本番テスト', desc: '学校のテスト形式にちょうせん', icon: '📝', badge: 0 },
           { mode: 'learning_log' as GameState, label: 'きろく', desc: 'きょうの問題・バッジ・背景', icon: '📒', badge: 0 },
-          { mode: 'card_shop' as GameState, label: 'ショップ', desc: 'MPでカードパックを購入', icon: '🎴', badge: 0 },
         ].map((item, i) => (
           <button
             key={item.mode}
