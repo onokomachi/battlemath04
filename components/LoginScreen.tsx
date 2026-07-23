@@ -142,19 +142,32 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
       {/* Title */}
       <div className="text-center mb-8 sm:mb-16 relative">
         <div className="absolute -inset-20 bg-red-600/15 blur-[120px] rounded-full animate-pulse" />
-        <h1 className="text-5xl md:text-8xl font-black text-hologram mb-4 tracking-[0.02em] pr-[0.1em]">
-          Battle-Math:04
+        <h1 className="text-5xl md:text-8xl font-black text-hologram mb-2 tracking-[0.02em] pr-[0.1em]">
+          BattleMath:04
         </h1>
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full mb-3"
+          style={{
+            background: 'linear-gradient(90deg, rgba(37,99,235,0.18), rgba(239,68,68,0.18))',
+            border: '1px solid rgba(255,255,255,0.15)',
+            boxShadow: '0 0 24px rgba(37,99,235,0.35), 0 0 24px rgba(239,68,68,0.25)',
+          }}>
+          <span className="text-lg">🐱</span>
+          <span className="font-black tracking-[0.35em] text-base sm:text-xl"
+            style={{
+              fontFamily: 'Orbitron, monospace',
+              background: 'linear-gradient(90deg,#60a5fa,#e2e8f0,#f87171)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+            }}>
+            code:CAT-WARS
+          </span>
+        </div>
         <div className="flex items-center justify-center gap-6 mb-2">
           <div className="h-[1px] w-20 bg-gradient-to-r from-transparent via-red-500 to-transparent" />
-          <p className="text-xs md:text-sm text-red-300 font-bold tracking-[0.3em] opacity-80">
-            4年生の算数 まるごと学習ゲーム
+          <p className="text-xs md:text-sm text-blue-200 font-bold tracking-[0.3em] opacity-80">
+            算数をきわめ ネコ軍団で せかいを制せ
           </p>
-          <div className="h-[1px] w-20 bg-gradient-to-l from-transparent via-red-500 to-transparent" />
+          <div className="h-[1px] w-20 bg-gradient-to-l from-transparent via-blue-400 to-transparent" />
         </div>
-        <p className="text-xs text-red-500/60 font-mono tracking-widest">
-          算数のもんだいを といて バトルに 勝とう!
-        </p>
       </div>
 
       {/* Auth Panel */}

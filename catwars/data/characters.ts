@@ -1,7 +1,7 @@
 // ── にゃんこ大戦争風 キャラクター図鑑 ───────────────────────────────────────────
-// 8系統 × 3進化段階 = 24フォーム。
-// スプライトは /assets/sprites/chars/<spriteFamily>-<stage>.svg（後でSupabase StorageのURLに
-// 差し替え可能。getCharacterSprite() の baseUrl を変えるだけ）。
+// 11系統 × 3進化段階 = 33フォーム（8通常系統＋3ボス系統）。
+// スプライトは /assets/sprites/chars/<spriteFamily>-<stage>.png（無料AI生成＋背景透過処理ずみ。
+// 後でSupabase/Firebase StorageのURLに差し替え可能。getCharacterSprite() の baseUrl を変えるだけ）。
 
 export type TargetPref = 'ANY' | 'DEFENSE' | 'RESOURCE';
 
@@ -14,7 +14,7 @@ export interface EvolutionForm {
 
 export interface CharacterFamily {
   id: string;            // 兵士ID（戦闘エンジンのsubType）＝アーミーストアのキー
-  spriteFamily: string;  // /assets/sprites/chars/<spriteFamily>-<stage>.svg
+  spriteFamily: string;  // /assets/sprites/chars/<spriteFamily>-<stage>.png
   displayName: string;   // 系統名
   role: string;          // 役割の短い説明
   isStarter?: boolean;   // 最初から使えるスターターキャラ
@@ -56,7 +56,7 @@ export function xpToNext(level: number): number {
 const SPRITE_BASE = '/assets/sprites/chars';
 
 export function getCharacterSprite(spriteFamily: string, stage: 1 | 2 | 3): string {
-  return `${SPRITE_BASE}/${spriteFamily}-${stage}.svg`;
+  return `${SPRITE_BASE}/${spriteFamily}-${stage}.png`;
 }
 
 // 戦闘エンジンの既存subType（barbarian/archer/giant/skeleton）→ 系統スプライトの対応
