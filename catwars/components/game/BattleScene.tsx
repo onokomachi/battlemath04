@@ -1425,7 +1425,7 @@ export const BattleScene: React.FC<Props> = ({
                         {e.type === 'BUILDING' ? (
                           <div className="flex flex-col items-center w-full h-full relative">
                             <img
-                              src={`/assets/sprites/${(e.subType as string).toLowerCase().replace(/_/g, '-')}.svg`}
+                              src={`/assets/sprites/${(e.subType as string).toLowerCase().replace(/_/g, '-')}.png`}
                               alt={e.subType as string}
                               style={{
                                 width: '100%', height: '100%',
@@ -1662,7 +1662,7 @@ export const BattleScene: React.FC<Props> = ({
                const baseStage = getStage(troop.id);
                const tr = tempRank[troop.id] ?? 0;
                const formName = fam ? fam.forms[baseStage - 1].name : troop.name;
-               const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.svg`;
+               const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.png`;
                const cost = fam ? Math.round(fam.cost.gold * (1 - buffVal('COST_REDUCTION') / 100)) : 0;
                const cdLeft = Math.max(0, (deployCdRef.current[troop.id] ?? 0) + (hasBuff('FAST_DEPLOY') ? Math.round(1500 * (1 - buffVal('FAST_DEPLOY') / 100)) : 1500) - Date.now());
                const affordable = Math.floor(gold) >= cost && cdLeft <= 0;

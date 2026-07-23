@@ -173,7 +173,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
               }, {})
             ).map(([type, n]) => (
               <div key={type} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10">
-                <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.svg`} alt={type}
+                <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.png`} alt={type}
                   style={{ width: 20, height: 20, objectFit: 'contain' }} draggable={false} />
                 <span className="text-white/70 text-[11px]">{BUILDING_STATS[type as BuildingType].name}×{n}</span>
               </div>
