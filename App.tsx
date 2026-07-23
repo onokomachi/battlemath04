@@ -524,7 +524,8 @@ const App: React.FC = () => {
   };
 
   const handleGuestPlay = () => {
-    setGameState(tutorialDone ? 'main_menu' : 'tutorial');
+    // カードバトルは撤去したため、旧カードバトル・チュートリアルはスキップしてメニューへ直行する
+    setGameState('main_menu');
   };
 
   // ログインボーナス: MP加算・Firestore書き込みはストア、受取済みフラグはApp側UI状態
