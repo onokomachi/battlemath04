@@ -1,0 +1,3 @@
+# Vercel デプロイ除外設定
+# reference/ フォルダは参照専用資料のため、本番デプロイには含めない
+reference/
