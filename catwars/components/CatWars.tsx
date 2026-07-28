@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BuildingType, BuildingStatus, GameState } from '../types';
+import { BuildingType, GameState } from '../types';
 import { BUILDING_STATS } from '../constants';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { useProgressStore } from '../store/useProgressStore';
+import { useBaseStore } from '../store/useBaseStore';
 import { useBattleSetupStore } from '../store/useBattleSetupStore';
 import { computeBattleLoadout } from '../utils/battleLoadout';
 import { BATTLE_MAP_BY_ID, BATTLE_MAPS } from '../data/battleMaps';
-import { buildPlayerDeployments } from '../utils/deployPlan';
 import { CHAPTER_BY_ID, CAMPAIGN, effectiveDifficulty } from '../data/campaign';
 import { useCampaignStore } from '../store/useCampaignStore';
 import { BattleScene } from './game/BattleScene';
@@ -21,9 +21,9 @@ import { sfx } from '../utils/audioEngine';
 const font = { fontFamily: '"M PLUS Rounded 1c", sans-serif' };
 const fontMono = { fontFamily: 'Orbitron, monospace' };
 
-// ① 「作戦立案(setup)」を廃止。拠点づくりが唯一の拠点編集画面になり、
-//    出撃は 範囲えらび → ステージえらび → 戦闘 の3ステップに短縮された。
-type View = 'home' | 'base' | 'army' | 'range' | 'stage' | 'battle' | 'buffs' | 'mercs';
+// 出撃導線: 範囲えらび → ステージえらび → 陣地づくり → 戦闘
+// 陣地はステージごとに組む（ゾーンの広さが章によって変わるため）。
+type View = 'home' | 'base' | 'army' | 'range' | 'stage' | 'prep' | 'battle' | 'buffs' | 'mercs';
 
 interface Props {
   onExit: () => void;
@@ -38,21 +38,24 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
     getTodayDailyStars, dailyStreak, todayAnswered, dailyGoal, updateDailyStreak,
   } = useProgressStore();
   const campaign = useCampaignStore();
+  const base = useBaseStore();
 
   const [activeChapterId, setActiveChapterId] = useState<string>(CAMPAIGN[0].id);
   const [quizSubtopics, setQuizSubtopics] = useState<string[]>([]);
   const gameState: GameState = { resources, buildings, troops, lastTick };
-  const loadout = useMemo(() => computeBattleLoadout(buildings), [buildings]);
+  // 施設は当日リセット制。今日建てたぶんから、今日つかえる戦力を算出する。
+  const built = base.getBuilt();
+  const loadout = useMemo(() => computeBattleLoadout(built), [built]);
   const dailyStars = getTodayDailyStars();
 
   // 金山のパッシブ収入を来訪時にまとめて回収（放置ボーナス）
   useEffect(() => {
     updateDailyStreak();
+    base.rollDateIfNeeded();
     const now = Date.now();
     const mins = Math.min(240, (now - lastTick) / 60000); // 最大4時間ぶん
-    const rate = buildings
-      .filter(b => b.type === BuildingType.GOLD_MINE && b.status === BuildingStatus.ACTIVE)
-      .reduce((s, b) => s + (BUILDING_STATS[BuildingType.GOLD_MINE].productionRate ?? 0), 0);
+    const mines = useBaseStore.getState().built[BuildingType.GOLD_MINE] ?? 0;
+    const rate = mines * (BUILDING_STATS[BuildingType.GOLD_MINE].productionRate ?? 0);
     const earned = Math.floor(rate * (mins / 60));
     if (earned > 0) addResources(earned);
     setGameState(prev => ({ ...prev, lastTick: now }));
@@ -67,7 +70,15 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   };
 
   // ── サブ画面 ───────────────────────────────
-  if (view === 'base') return <BaseBuilder onBack={() => setView('home')} />;
+  // ハブからの「陣地づくり」は、つぎに挑む章の陣地を編集する
+  if (view === 'base') {
+    return (
+      <BaseBuilder
+        chapter={CHAPTER_BY_ID[campaign.nextChapterId()] ?? CAMPAIGN[0]}
+        onBack={() => setView('home')}
+      />
+    );
+  }
   if (view === 'army') return <ArmyRosterScreen onBack={() => setView('home')} />;
 
   if (view === 'range') {
@@ -86,7 +97,21 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
         onBack={() => setView('home')}
         onStart={(chapterId) => {
           setActiveChapterId(chapterId);
-          campaign.recordAttempt(chapterId);
+          // ステージを決めてから、そのステージの自陣ゾーンに合わせて陣地を組む
+          setView('prep');
+        }}
+      />
+    );
+  }
+
+  if (view === 'prep') {
+    const chapter = CHAPTER_BY_ID[activeChapterId] ?? CAMPAIGN[0];
+    return (
+      <BaseBuilder
+        chapter={chapter}
+        onBack={() => setView('stage')}
+        onProceed={() => {
+          campaign.recordAttempt(chapter.id);
           setView('battle');
         }}
       />
@@ -97,8 +122,8 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
     const chapter = CHAPTER_BY_ID[activeChapterId] ?? CAMPAIGN[0];
     const map = BATTLE_MAP_BY_ID[chapter.mapId] ?? BATTLE_MAPS[0];
     const assist = campaign.assistLevelFor(chapter.id);
-    // ① 拠点づくりの配置を、そのまま戦場の自陣ゾーンへ転写する（置き直しは不要）
-    const deployments = buildPlayerDeployments(buildings, map, loadout);
+    // 陣地づくりで組んだ配置を、そのまま戦場に出す（座標はすでに戦場のもの）
+    const deployments = base.getLayout(chapter.id);
     return (
       <BattleScene
         attackerState={gameState}
@@ -177,7 +202,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
       <div className="grid grid-cols-2 gap-3 px-4 pt-4">
         <HubButton icon="⚔️" label="出撃！" sub={allCleared ? '全章クリア！ 好きな章に再挑戦' : `第${nextChapter.no}章「${nextChapter.title}」へ`} color="#ef4444"
           onClick={() => { resetBattleSession(); setView('range'); }} big />
-        <HubButton icon="🏰" label="拠点づくり" sub="ここで組んだ拠点が戦場に出る" color="#38bdf8"
+        <HubButton icon="🏰" label="陣地づくり" sub="⚡で施設を建てる（明日リセット）" color="#38bdf8"
           onClick={() => setView('base')} />
         <HubButton icon="🐱" label="ネコ図鑑" sub="部隊のレベル・進化" color="#a3e635"
           onClick={() => setView('army')} />
@@ -189,20 +214,16 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
       <div className="px-4 pt-4">
         <div className="rounded-2xl border border-white/10 p-3" style={{ background: 'rgba(6,10,24,0.55)' }}>
           <div className="flex items-center justify-between mb-2">
-            <span className="text-white/70 text-xs font-bold" style={fontMono}>じぶんの拠点</span>
-            <button onClick={() => setView('base')} className="text-[#38bdf8] text-[11px]">くわしく ›</button>
+            <span className="text-white/70 text-xs font-bold" style={fontMono}>きょうの もちもの</span>
+            <button onClick={() => setView('base')} className="text-[#38bdf8] text-[11px]">陣地づくり ›</button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {Object.values(
-              buildings.reduce<Record<string, number>>((acc, b) => {
-                acc[b.type] = (acc[b.type] ?? 0) + 1; return acc;
-              }, {})
-            ).length === 0 && <span className="text-white/40 text-xs">まだ施設がありません</span>}
-            {Object.entries(
-              buildings.reduce<Record<string, number>>((acc, b) => {
-                acc[b.type] = (acc[b.type] ?? 0) + 1; return acc;
-              }, {})
-            ).map(([type, n]) => (
+            {Object.entries(built).filter(([, n]) => (n ?? 0) > 0).length === 0 && (
+              <span className="text-white/40 text-xs">
+                まだ施設がありません。⚡エナジーで建てよう（明日リセット）
+              </span>
+            )}
+            {Object.entries(built).filter(([, n]) => (n ?? 0) > 0).map(([type, n]) => (
               <div key={type} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10">
                 <img src={`/assets/sprites/${type.toLowerCase().replace(/_/g, '-')}.png`} alt={type}
                   style={{ width: 20, height: 20, objectFit: 'contain' }} draggable={false} />

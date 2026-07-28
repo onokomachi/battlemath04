@@ -6,14 +6,6 @@ interface Props {
   cellSize?: number;
 }
 
-const TERRAIN_ICONS: Record<string, string> = {
-  WATER: '🌊',
-  BRIDGE: '',
-  ROCK: '🪨',
-  SWAMP: '',
-  GRASS: '',
-};
-
 export const TerrainLayer: React.FC<Props> = ({ terrain, cellSize = 40 }) => {
   return (
     <>
@@ -22,11 +14,11 @@ export const TerrainLayer: React.FC<Props> = ({ terrain, cellSize = 40 }) => {
         const isBridge = tile.type === 'BRIDGE';
         const isRock = tile.type === 'ROCK';
         const isSwamp = tile.type === 'SWAMP';
+        const isLava = tile.type === 'LAVA';
 
         return (
           <div
             key={`${tile.x}-${tile.y}`}
-            className={isWater ? 'terrain-water' : isBridge ? 'terrain-bridge' : ''}
             style={{
               position: 'absolute',
               left: tile.x * cellSize,
@@ -39,17 +31,25 @@ export const TerrainLayer: React.FC<Props> = ({ terrain, cellSize = 40 }) => {
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: cellSize * 0.5,
-              background: isWater ? undefined
+              // 水はもともと CSS クラス .terrain-water 頼みだったが、そのクラスが
+              // どこにも定義されておらず、川が透明で見えていなかった。インラインで描く。
+              background: isWater
+                ? 'linear-gradient(180deg, #1e40af 0%, #1d4ed8 45%, #1e3a8a 100%)'
                 : isBridge ? '#92400e'
                 : isRock ? '#374151'
                 : isSwamp ? 'rgba(20,83,45,0.8)'
+                : isLava ? 'radial-gradient(circle at 40% 35%, #fb923c, #b91c1c 55%, #7f1d1d)'
                 : 'transparent',
               border: isBridge ? '1px solid rgba(120,53,15,0.6)' : 'none',
-              boxShadow: isRock ? 'inset 0 0 8px rgba(0,0,0,0.5)' : undefined,
+              boxShadow: isRock ? 'inset 0 0 8px rgba(0,0,0,0.5)'
+                : isWater ? 'inset 0 0 10px rgba(0,0,0,0.45)'
+                : isLava ? 'inset 0 0 10px rgba(0,0,0,0.55), 0 0 10px rgba(251,146,60,0.45)' : undefined,
             }}
           >
+            {isWater && <span style={{ fontSize: cellSize * 0.42, opacity: 0.75, lineHeight: 1 }}>🌊</span>}
             {isRock && <span style={{ fontSize: cellSize * 0.4, lineHeight: 1 }}>🪨</span>}
             {isSwamp && <span style={{ fontSize: cellSize * 0.4, opacity: 0.6, lineHeight: 1 }}>🌿</span>}
+            {isLava && <span style={{ fontSize: cellSize * 0.42, opacity: 0.85, lineHeight: 1 }}>🔥</span>}
             {isBridge && (
               <div style={{
                 width: '100%',

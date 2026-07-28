@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { GameState, Troop, BuildingType, BattleEntity, GRID_SIZE } from '../../types';
+import { GameState, Troop, BuildingType, BattleEntity, GRID_W, GRID_H } from '../../types';
 import { BUILDING_STATS } from '../../constants';
 import { Button } from '../ui/Button';
 import { Swords, Trophy, Skull, Zap, Heart } from '../ui/Icons';
@@ -14,6 +14,10 @@ import { CHARACTERS, CHARACTER_BY_ID, STAGE_MULT, getCharacterSprite, spriteFami
 import { PinchZoomLayer } from './PinchZoomLayer';
 import { CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ASSIST_LEVELS, EnemyUnitKind } from '../../data/campaign';
 import { collectWallCells, hasLineOfSight, isFlying, pickDefenseTarget } from '../../utils/combatRules';
+import {
+  ALIEN_STATS, LAVA_DPS, MeteorState, collectLavaCells, isOnLava,
+  makeAlienEntity, makeTitanEntity, stepTitan,
+} from '../../utils/stageHazards';
 
 const IN_BATTLE_BUILD_COSTS: Partial<Record<BuildingType, number>> = {
   [BuildingType.WALL]: 40,
@@ -279,6 +283,15 @@ export const BattleScene: React.FC<Props> = ({
   const lastEnemySpawnRef = useRef(0);
   const enemyWaveRef = useRef(0);
   const bossSpawnedRef = useRef(false);
+  // ── ステージギミックの状態 ──
+  const lavaCellsRef = useRef<Set<string>>(new Set());
+  const lastLavaTickRef = useRef(0);
+  const [meteors, setMeteors] = useState<MeteorState[]>([]);
+  const meteorsRef = useRef<MeteorState[]>([]);
+  const lastMeteorRef = useRef<Record<number, number>>({});
+  const lastAlienRef = useRef<Record<number, number>>({});
+  const titanDirRef = useRef<1 | -1>(1);
+  const lastFrameRef = useRef(0);
   // 防衛施設の「照準」状態: 施設ID → { targetId, lockedAt }。
   // 標的を変えるたびに aimTimeMs ぶんの予告時間を挟むための記録（⑥ 反応の余地）。
   const aimRef = useRef<Record<string, { targetId: string; lockedAt: number }>>({});
@@ -291,8 +304,8 @@ export const BattleScene: React.FC<Props> = ({
 
   // Initialize cells
   const cells: { x: number; y: number }[] = [];
-  for (let y = 0; y < GRID_SIZE; y++) {
-    for (let x = 0; x < GRID_SIZE; x++) {
+  for (let y = 0; y < GRID_H; y++) {
+    for (let x = 0; x < GRID_W; x++) {
       cells.push({ x, y });
     }
   }
@@ -334,12 +347,13 @@ export const BattleScene: React.FC<Props> = ({
     // 地形コストマップを構築
     if (battleMap) {
       terrainCostsRef.current = buildTerrainCostMap(battleMap.terrain);
-      // 通行不可地形をobstaclesに追加
+      // 通行不可地形をobstaclesに追加（溶岩は「通れるが痛い」ので障害物にはしない）
       battleMap.terrain.forEach(tile => {
         if (tile.type === 'WATER' || tile.type === 'ROCK') {
           obstaclesRef.current.add(`${tile.x},${tile.y}`);
         }
       });
+      lavaCellsRef.current = collectLavaCells(battleMap.terrain);
     }
 
     // プレイヤー配置施設（ATTACKER_BUILDING）をentitiesに追加
@@ -363,7 +377,12 @@ export const BattleScene: React.FC<Props> = ({
       };
     });
 
-    setEntities([...defenseEntities, ...playerBuildingEntities]);
+    // 巨大生物（中立）を配置。開始時から盤面にいて、決まった経路を往復する。
+    const titanEntities: BattleEntity[] = battleMap?.titan
+      ? [makeTitanEntity(battleMap.titan, 'titan-1')]
+      : [];
+
+    setEntities([...defenseEntities, ...playerBuildingEntities, ...titanEntities]);
     // ロスター＝出撃できる系統一覧（にゃんこ式：ゴールドを払って何度でも出せる）
     const roster: Troop[] = CHARACTERS.map(c => ({
       id: c.id, name: c.forms[0].name, count: 1,
@@ -612,6 +631,27 @@ export const BattleScene: React.FC<Props> = ({
     setProjectiles(prev => prev.filter(p => now - p.startedAt < p.duration));
     setHitFx(prev => prev.filter(f => now - f.startedAt < f.duration));
 
+    // ── 流星の予告をスケジュールする（着弾の damage 適用は setEntities の中で行う）──
+    if (battleStarted && !battleResult && battleMap?.meteorZones) {
+      let changed = false;
+      battleMap.meteorZones.forEach((z, i) => {
+        const last = lastMeteorRef.current[i] ?? now;
+        if (lastMeteorRef.current[i] === undefined) { lastMeteorRef.current[i] = now; return; }
+        if (now - last > z.intervalMs) {
+          lastMeteorRef.current[i] = now;
+          meteorsRef.current.push({
+            id: `met-${i}-${now}`, zone: z,
+            warnedAt: now, impactAt: now + z.warningMs, resolved: false,
+          });
+          changed = true;
+        }
+      });
+      // 着弾から600ms たったものは表示から消す
+      const before = meteorsRef.current.length;
+      meteorsRef.current = meteorsRef.current.filter(m => now - m.impactAt < 600);
+      if (changed || meteorsRef.current.length !== before) setMeteors([...meteorsRef.current]);
+    }
+
     setEntities(prevEntities => {
       const mapped = prevEntities.map(e => ({ ...e }));
       // 撃破/破壊報酬（前フレームでHP0になった敵を集計）
@@ -754,8 +794,8 @@ export const BattleScene: React.FC<Props> = ({
               id: `wave-${now}-${i}`,
               type: 'TROOP',
               subType: s.subType,
-              x: Math.max(0, Math.min(GRID_SIZE - 1, spawnBaseX + 1 + (i % 2) * 0.8)),
-              y: Math.max(0, Math.min(GRID_SIZE - 1, spawnBaseY + (i - 1) * 1.2)),
+              x: Math.max(0, Math.min(GRID_W - 1, spawnBaseX + 1 + (i % 2) * 0.8)),
+              y: Math.max(0, Math.min(GRID_H - 1, spawnBaseY + (i - 1) * 1.2)),
               hp,
               maxHp: hp,
               damage: Math.round(s.damage * difficulty.enemyDamageMult),
@@ -773,6 +813,69 @@ export const BattleScene: React.FC<Props> = ({
             ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
             : `⚠️ 敵の援軍 Wave ${wave}（${ENEMY_UNIT_STATS[kinds[0]].label}）が出現！`);
           setTimeout(() => setTriggerMessage(null), 3000);
+        }
+      }
+
+      const newDamagedEntities = new Set<string>();
+
+      // ── ステージギミック ────────────────────────────────────────────
+      if (battleStarted && battleResult === null) {
+        const dt = lastFrameRef.current ? Math.min(0.1, (now - lastFrameRef.current) / 1000) : 0;
+        lastFrameRef.current = now;
+
+        // 溶岩: 乗っているキャラに継続ダメージ（敵・味方・中立すべてに等しく適用）
+        if (lavaCellsRef.current.size > 0 && now - lastLavaTickRef.current > 500) {
+          const elapsed = (now - lastLavaTickRef.current) / 1000;
+          lastLavaTickRef.current = now;
+          nextEntities.forEach(e => {
+            if (e.type !== 'TROOP' || e.hp <= 0) return;
+            if (e.subType === 'titan') return;            // ヌシは溶岩を気にしない
+            if (isFlying(e.subType)) return;              // 飛行系は溶岩の上を飛べる
+            if (isOnLava(e, lavaCellsRef.current)) {
+              e.hp -= LAVA_DPS * Math.min(1, elapsed);
+              newDamagedEntities.add(e.id);
+            }
+          });
+        }
+
+        // 流星: 着弾時刻をすぎたものに範囲ダメージ
+        for (const m of meteorsRef.current) {
+          if (m.resolved || now < m.impactAt) continue;
+          m.resolved = true;
+          sfx.explosion();
+          nextEntities.forEach(e => {
+            if (e.hp <= 0) return;
+            const d = Math.hypot(e.x - m.zone.x, e.y - m.zone.y);
+            if (d <= m.zone.radius) {
+              e.hp -= m.zone.damage;
+              newDamagedEntities.add(e.id);
+            }
+          });
+        }
+
+        // 中立エイリアン: 巣から定期的に湧く（上限あり）
+        if (battleMap?.alienNests) {
+          battleMap.alienNests.forEach((nest, i) => {
+            const last = lastAlienRef.current[i];
+            if (last === undefined) { lastAlienRef.current[i] = now; return; }
+            if (now - last <= nest.intervalMs) return;
+            lastAlienRef.current[i] = now;
+            const alive = nextEntities.filter(
+              e => e.team === 'NEUTRAL' && e.subType === ALIEN_STATS.subType && e.hp > 0
+            ).length;
+            if (alive >= nest.max * battleMap.alienNests!.length) return;
+            nextEntities.push(makeAlienEntity(nest, `alien-${i}-${now}`));
+            setTriggerMessage('👾 エイリアンが出現！ 敵も味方もおかまいなしに おそってくるぞ');
+            setTimeout(() => setTriggerMessage(null), 2600);
+          });
+        }
+
+        // 巨大生物: 決まった経路を往復する（攻撃は通常のTROOP AIが処理する）
+        if (battleMap?.titan && dt > 0) {
+          const titan = nextEntities.find(e => e.subType === 'titan' && e.hp > 0);
+          if (titan) {
+            titanDirRef.current = stepTitan(titan, battleMap.titan, titanDirRef.current, dt);
+          }
         }
       }
 
@@ -798,7 +901,6 @@ export const BattleScene: React.FC<Props> = ({
       // 壁は砲撃・ビームを遮る（⑥「壁を越えて撃ってくる」への対策）
       wallCellsRef.current = collectWallCells(nextEntities);
 
-      const newDamagedEntities = new Set<string>();
 
       // Update loops
       nextEntities.forEach(entity => {
@@ -806,9 +908,10 @@ export const BattleScene: React.FC<Props> = ({
         // --- BUILDING ATTACKS (both DEFENDER towers and ATTACKER_BUILDING defenses) ---
         if (entity.type === 'BUILDING') {
            // Determine hostile targets based on this building's team
+           // 中立勢力（エイリアン・ヌシ）は、どちらの防衛施設からも攻撃対象になる
            const hostiles = entity.team === 'ATTACKER_BUILDING'
-             ? nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'TROOP')
-             : attackers;
+             ? nextEntities.filter(e => e.type === 'TROOP' && (e.team === 'DEFENDER' || e.team === 'NEUTRAL'))
+             : nextEntities.filter(e => e.team === 'ATTACKER' || (e.type === 'TROOP' && e.team === 'NEUTRAL'));
 
            if (entity.isHidden) {
              const enemyNearby = hostiles.some(a => {
@@ -858,8 +961,13 @@ export const BattleScene: React.FC<Props> = ({
                 setProjectiles(prev => [...prev, newProj]);
                 sfx.laserShot();
 
+                // 役割ごとの防衛施設ダメージ耐性を適用する。
+                // タンク系は砲撃を受け止める役なので大きく軽減し、高速系は打たれ弱い。
+                // HPを上げるのではなく「大砲に強い」という形にすることで役割の個性が立つ。
+                const resist = CHARACTER_BY_ID[target.subType]?.defenseResist ?? 0;
+                const dealt = Math.max(1, Math.round(entity.damage * (1 - resist)));
                 const prevHp = target.hp;
-                target.hp -= entity.damage;
+                target.hp -= dealt;
                 if (target.hp < prevHp) newDamagedEntities.add(target.id);
                 entity.lastAttack = now;
             }
@@ -1131,6 +1239,8 @@ export const BattleScene: React.FC<Props> = ({
   const isCharUnlocked = (id: string): boolean => {
     const fam = CHARACTER_BY_ID[id];
     if (fam?.isStarter) return true;
+    // 兵舎を建てた日は、その解放ぶんを無料で使える（＝施設を建てる意味がここに出る）
+    if (loadout?.unlockedTroopTypes?.includes(id)) return true;
     if (permanentUnlocks.includes(id)) return true;
     // reset unlockedToday if date changed
     const today = new Date().toISOString().slice(0, 10);
@@ -1213,7 +1323,17 @@ export const BattleScene: React.FC<Props> = ({
            animation: cw-aura-spin 26s linear infinite;
            filter: blur(34px);
          }
-         @media (prefers-reduced-motion: reduce) { .cw-battle-aura { animation: none; } }
+         @keyframes cw-titan-breathe {
+           0%, 100% { transform: scale(1); }
+           50% { transform: scale(1.07); }
+         }
+         @keyframes cw-meteor-warn {
+           0%, 100% { opacity: 0.30; transform: scale(0.9); }
+           50% { opacity: 0.75; transform: scale(1.04); }
+         }
+         @media (prefers-reduced-motion: reduce) {
+           .cw-battle-aura, .cw-meteor-ring { animation: none; }
+         }
          .building-3d {
            box-shadow:
              inset -3px -3px 6px rgba(0,0,0,0.5),
@@ -1281,13 +1401,14 @@ export const BattleScene: React.FC<Props> = ({
        >
         {/* 青⇄赤の回転オーラ（CAT-WARS 世界観の動的バックドロップ） */}
         <div className="cw-battle-aura" />
-        <PinchZoomLayer>
+        {/* contentSize を渡すと盤面が表示領域に自動で収まる（iPad 横向きで下が切れていた対策） */}
+        <PinchZoomLayer contentSize={{ width: GRID_W * 40, height: GRID_H * 40 }} minScale={0.25}>
           {/* ISOMETRIC CONTAINER */}
           <div
             className="relative iso-container shadow-2xl"
             style={{
-                width: GRID_SIZE * 40,
-                height: GRID_SIZE * 40,
+                width: GRID_W * 40,
+                height: GRID_H * 40,
                 backgroundColor: 'rgba(10,14,26,0.5)'
             }}
           >
@@ -1448,6 +1569,32 @@ export const BattleScene: React.FC<Props> = ({
               );
             })}
 
+            {/* 流星の予告円 → 着弾（予告が出てから約1.7秒あるので、見てから逃がせる） */}
+            {meteors.map(m => {
+              const now2 = Date.now();
+              const impacted = now2 >= m.impactAt;
+              const size = m.zone.radius * 2 * 40;
+              const left = m.zone.x * 40 + 20 - size / 2;
+              const top = m.zone.y * 40 + 20 - size / 2;
+              const prog = Math.min(1, (now2 - m.warnedAt) / Math.max(1, m.impactAt - m.warnedAt));
+              return (
+                <div key={m.id} className="absolute rounded-full pointer-events-none cw-meteor-ring"
+                  style={{
+                    left, top, width: size, height: size, zIndex: 57,
+                    border: impacted ? '4px solid rgba(255,237,213,0.95)' : '3px dashed rgba(251,146,60,0.9)',
+                    background: impacted
+                      ? 'radial-gradient(circle, rgba(255,237,213,0.75), rgba(239,68,68,0.25) 60%, transparent 72%)'
+                      : `radial-gradient(circle, rgba(251,146,60,${0.10 + prog * 0.25}), transparent 70%)`,
+                    boxShadow: impacted ? '0 0 40px rgba(251,146,60,0.95)' : '0 0 16px rgba(251,146,60,0.55)',
+                    animation: impacted ? undefined : 'cw-meteor-warn 0.55s ease-in-out infinite',
+                  }}>
+                  {!impacted && (
+                    <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-2xl">☄️</span>
+                  )}
+                </div>
+              );
+            })}
+
             {/* Entities Render sorted correctly */}
             {entities
                 .sort((a, b) => (a.x + a.y) - (b.x + b.y)) // pseudo depth sort
@@ -1464,15 +1611,18 @@ export const BattleScene: React.FC<Props> = ({
                    height = (bStats?.height || 1) * 40;
                    bgStyle = bStats?.color || 'bg-gray-500';
                 } else {
-                   if ((e.subType as string).startsWith('boss')) {
-                      width = 66;
-                      height = 76;
-                   } else if (e.subType === 'giant') {
-                      width = 44;
-                      height = 54;
-                   } else if (e.subType === 'archer') {
-                      width = 26;
-                      height = 30;
+                   // 体格は系統ごとに定義した bodySize から決める（1マス=40px）。
+                   // タンクはマスをはみ出す大柄、高速系は小さく、ボスは圧倒的に大きい。
+                   const fam = CHARACTER_BY_ID[e.subType];
+                   if (fam) {
+                      width = fam.bodySize;
+                      height = Math.round(fam.bodySize * 1.15);
+                   } else if (e.subType === 'titan') {
+                      width = 110;
+                      height = 120;
+                   } else if (e.subType === ALIEN_STATS.subType) {
+                      width = ALIEN_STATS.bodySize;
+                      height = Math.round(ALIEN_STATS.bodySize * 1.15);
                    } else if (e.subType === 'skeleton') {
                       width = 24;
                       height = 28;
@@ -1493,10 +1643,13 @@ export const BattleScene: React.FC<Props> = ({
                             ${e.team === 'ATTACKER_BUILDING' ? 'ring-2 ring-[#22d3ee]/50' : ''}
                         `}
                         style={{
-                            left: e.x * 40,
-                            top: e.y * 40,
+                            // 施設はマスの左上に合わせる。キャラは体格がまちまちなので、
+                            // マスの中心を基準にそろえる（大型が右下にずれて見えるのを防ぐ）。
+                            left: e.type === 'BUILDING' ? e.x * 40 : e.x * 40 + 20 - width / 2,
+                            top:  e.type === 'BUILDING' ? e.y * 40 : e.y * 40 + 20 - height / 2,
                             width: width,
                             height: height,
+                            // 大型ほど手前に描く（小さいキャラが巨体の裏に完全に隠れないよう TROOP に加算）
                             zIndex: Math.floor(e.x + e.y) + (e.type === 'TROOP' ? 3 : 0), // Z depth
                             ...(e.type === 'BUILDING' ? {
                               background: buildingAccentColor[e.subType as string] ?? 'rgba(255,255,255,0.05)',
@@ -1539,6 +1692,23 @@ export const BattleScene: React.FC<Props> = ({
                               <div className="absolute w-4 h-1.5 bg-blue-900/40 rounded-full bottom-0 left-1/2 -translate-x-1/2 blur-[1px]" />
                             )}
                             {(() => {
+                              // 中立勢力（エイリアン・ヌシ）はネコではないので、専用の見た目にする
+                              if (e.team === 'NEUTRAL') {
+                                const isTitan = e.subType === 'titan';
+                                return (
+                                  <div className="w-full h-full flex items-center justify-center select-none"
+                                    style={{
+                                      fontSize: isTitan ? 84 : 26,
+                                      lineHeight: 1,
+                                      filter: isTitan
+                                        ? 'drop-shadow(0 0 14px rgba(168,85,247,0.95)) saturate(1.4)'
+                                        : 'drop-shadow(0 0 7px rgba(74,222,128,0.9))',
+                                      animation: isTitan ? 'cw-titan-breathe 2.6s ease-in-out infinite' : undefined,
+                                    }}>
+                                    {isTitan ? '🦑' : '👾'}
+                                  </div>
+                                );
+                              }
                               // 攻撃側は自軍の進化段階、敵側は段階1で描画
                               const st = e.team === 'ATTACKER' ? getStage(e.subType) : 1;
                               const url = troopSpriteUrl(e.subType, st);
@@ -1655,8 +1825,10 @@ export const BattleScene: React.FC<Props> = ({
          const win = battleResult === 'WIN';
          // 戦利品は章ごとに設定（難しい章ほど多い）
          const loot = win ? { gold: Math.round(chapter.rewardCredits * lootMult) } : { gold: 0 };
+         // fixed + z-[160] にして、下部のキャラ出撃バー(z-50)より確実に手前へ出す。
+         // 以前は両方 z-50 の兄弟要素で、DOM順が後のバーがリザルトを覆っていた。
          return (
-         <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300 p-4 overflow-y-auto">
+         <div className="fixed inset-0 z-[160] bg-black/90 flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300 p-4 overflow-y-auto">
             {win ? (
                <div className="text-center p-6 bg-slate-900/70 border border-yellow-500/30 rounded-2xl max-w-sm w-full max-h-[92dvh] overflow-y-auto backdrop-blur-md shadow-2xl">
                  <Trophy className="w-16 h-16 text-yellow-400 mx-auto mb-3 animate-bounce" />
@@ -1693,30 +1865,11 @@ export const BattleScene: React.FC<Props> = ({
        })()}
 
        {/* Hotbar: Bottom selection console for both troops and spells */}
-       <div className="bg-gray-950/95 border-t border-gray-800 p-3 z-50 relative shadow-2xl flex flex-col gap-2">
-         {/* ゴールドで魔法カードを補充 */}
-         <div className="flex gap-2 mb-2">
-           <button
-             onClick={() => { if (gold >= 60) { setGold(g => g - 60); setSpellCounts(s => ({ ...s, HEAL: s.HEAL + 1 })); } }}
-             disabled={gold < 60}
-             className="flex-1 py-2 text-xs font-bold rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee] disabled:opacity-30"
-             style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
-           >
-             💊 ヒール補充 (60⚡)
-           </button>
-           <button
-             onClick={() => { if (gold >= 80) { setGold(g => g - 80); setSpellCounts(s => ({ ...s, RAGE: s.RAGE + 1 })); } }}
-             disabled={gold < 80}
-             className="flex-1 py-2 text-xs font-bold rounded-lg border border-[#fb923c]/40 bg-[#fb923c]/10 text-[#fb923c] disabled:opacity-30"
-             style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
-           >
-             😤 レイジ補充 (80⚡)
-           </button>
-         </div>
-
-         {/* Row 1: Active spells selection panel */}
-         <div className="flex gap-2 justify-center border-b border-gray-800 pb-2">
-           <span className="text-[10px] font-black text-gray-400 self-center uppercase pr-2">魔法カード:</span>
+       {/* iPad 横向きでは画面の高さが限られるため、行数を減らしてコンパクトにしている */}
+       <div className="bg-gray-950/95 border-t border-gray-800 px-3 py-1.5 z-50 relative shadow-2xl flex flex-col gap-1.5 flex-shrink-0">
+         {/* Row 1: 魔法カード（選択＋補充を1行にまとめた） */}
+         <div className="flex gap-2 items-center justify-center flex-wrap">
+           <span className="text-[10px] font-black text-gray-400 self-center uppercase pr-1">魔法カード:</span>
            <button
              onClick={() => {
                setSelectedSpell('HEAL');
@@ -1754,6 +1907,56 @@ export const BattleScene: React.FC<Props> = ({
                残: {spellCounts.RAGE}
              </span>
            </button>
+
+           {/* 補充（旧・独立した行を、この行のチップに統合してバーの高さを削った） */}
+           <button
+             onClick={() => { if (gold >= 60) { setGold(g => g - 60); setSpellCounts(s => ({ ...s, HEAL: s.HEAL + 1 })); } }}
+             disabled={gold < 60}
+             className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee] disabled:opacity-30 whitespace-nowrap"
+           >
+             ＋💊60⚡
+           </button>
+           <button
+             onClick={() => { if (gold >= 80) { setGold(g => g - 80); setSpellCounts(s => ({ ...s, RAGE: s.RAGE + 1 })); } }}
+             disabled={gold < 80}
+             className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#fb923c]/40 bg-[#fb923c]/10 text-[#fb923c] disabled:opacity-30 whitespace-nowrap"
+           >
+             ＋😤80⚡
+           </button>
+
+           {/* 建設（旧・独立した行を、この行に統合） */}
+           <span className="text-[10px] font-black text-gray-400 self-center uppercase pl-2">建設:</span>
+           {IN_BATTLE_BUILD_OPTIONS.map(type => {
+             const bCost = IN_BATTLE_BUILD_COSTS[type] ?? 0;
+             const canAfford = Math.floor(gold) >= bCost;
+             const selected = buildMode === type;
+             return (
+               <button
+                 key={type}
+                 onClick={() => {
+                   setBuildMode(selected ? null : type);
+                   setSelectedTroopId(null);
+                   setSelectedSpell(null);
+                 }}
+                 disabled={!canAfford && !selected}
+                 className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-bold whitespace-nowrap transition-all active:scale-95 ${
+                   selected
+                     ? 'border-[#22d3ee] bg-[#22d3ee]/20 text-[#22d3ee]'
+                     : canAfford
+                       ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10'
+                       : 'border-white/10 bg-transparent text-white/40 opacity-40'
+                 }`}
+               >
+                 <span className="text-sm leading-none">{BUILDING_STATS[type].icon || '🧱'}</span>
+                 <span style={{ fontFamily: 'Orbitron, monospace' }}>{bCost}⚡</span>
+               </button>
+             );
+           })}
+           {buildMode && (
+             <span className="text-[10px] text-[#22d3ee] font-bold animate-pulse whitespace-nowrap">
+               👆 配置する場所をタップ
+             </span>
+           )}
          </div>
 
          {/* Row 2: 出撃（ゴールド消費・にゃんこ式）+ 一時ランクアップ */}
@@ -1844,43 +2047,6 @@ export const BattleScene: React.FC<Props> = ({
             })()}
          </div>
 
-         {/* Row 3: 戦闘中施設建設 */}
-         <div className="flex items-center gap-2 overflow-x-auto px-1 border-t border-white/10 pt-2">
-           <span className="text-[10px] font-bold text-white/40 flex-shrink-0" style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}>
-             🏗️ 建設:
-           </span>
-           {IN_BATTLE_BUILD_OPTIONS.map(type => {
-             const bCost = IN_BATTLE_BUILD_COSTS[type] ?? 0;
-             const canAfford = Math.floor(gold) >= bCost;
-             const selected = buildMode === type;
-             return (
-               <button
-                 key={type}
-                 onClick={() => {
-                   setBuildMode(selected ? null : type);
-                   setSelectedTroopId(null);
-                   setSelectedSpell(null);
-                 }}
-                 disabled={!canAfford && !selected}
-                 className={`flex-shrink-0 flex flex-col items-center justify-center w-16 h-12 rounded-xl border-2 transition-all active:scale-95 ${
-                   selected
-                     ? 'border-[#22d3ee] bg-[#22d3ee]/20'
-                     : canAfford
-                       ? 'border-white/30 bg-white/5 hover:bg-white/10'
-                       : 'border-white/10 bg-transparent opacity-30'
-                 }`}
-               >
-                 <span className="text-lg">{BUILDING_STATS[type].icon || '🧱'}</span>
-                 <span className="text-[9px] font-bold text-[#facc15] leading-none" style={{ fontFamily: 'Orbitron, monospace' }}>{bCost}⚡</span>
-               </button>
-             );
-           })}
-           {buildMode && (
-             <span className="text-[10px] text-[#22d3ee] font-bold animate-pulse flex-shrink-0" style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}>
-               👆 配置する場所をタップ
-             </span>
-           )}
-         </div>
        </div>
 
        {/* 戦闘中クイズ（出撃前に選んだ範囲からランダム出題 → ⚡エナジー獲得）
