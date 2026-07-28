@@ -30,6 +30,23 @@ export interface CharacterFamily {
   };
   cost: { gold: number; count: number }; // 補充1回ぶん（ゴールドのみ）
   accent: string;
+
+  // ── 見た目と役割の個性 ────────────────────────────────────────────
+  /** 戦場での表示サイズ(px)。1マス=40px なので、40 を超えるとマスからはみ出す大型。 */
+  bodySize: number;
+  /** 体型の指定。スプライト生成プロンプトと、図鑑の説明に使う。 */
+  bodyType: string;
+  /**
+   * 防衛施設（大砲・テスラ）から受けるダメージの軽減率。
+   * 正=打たれ強い / 負=打たれ弱い。タンク系は砲撃を受け止める役割なので大きく取る。
+   * HPを上げるのではなく「大砲に強い」という形にすることで、役割の個性がはっきり出る。
+   */
+  defenseResist: number;
+}
+
+/** 大型ユニット（1マスをはみ出す）かどうか */
+export function isLargeBody(familyId: string): boolean {
+  return (CHARACTER_BY_ID[familyId]?.bodySize ?? 0) > 44;
 }
 
 // 進化段階を返す（Lv1-9 = 1, Lv10-29 = 2, Lv30+ = 3）
@@ -90,6 +107,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 60, damage: 15, moveSpeed: 2.5, target: 'ANY', attackRange: 1.2, attackSpeed: 1000 },
     cost: { gold: 30, count: 3 },
+    bodySize: 34, bodyType: 'がっしりした標準体型。肩幅が広く足が太い', defenseResist: 0.0,
   },
   {
     id: 'archer', spriteFamily: 'ranged', displayName: '遠距離系', role: '壁ごしに矢を放つ狙撃手',
@@ -102,6 +120,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 40, damage: 12, moveSpeed: 3.0, target: 'ANY', attackRange: 3.5, attackSpeed: 900 },
     cost: { gold: 30, count: 3 },
+    bodySize: 30, bodyType: 'すらりと細身。長い手足でしなやか', defenseResist: -0.1,
   },
   {
     id: 'giant', spriteFamily: 'tank', displayName: 'タンク系', role: '防衛設備をひきつける盾役',
@@ -114,6 +133,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 300, damage: 25, moveSpeed: 1.5, target: 'DEFENSE', attackRange: 1.2, attackSpeed: 1200 },
     cost: { gold: 120, count: 1 },
+    bodySize: 58, bodyType: 'ずんぐりと巨大。腕と胴がとても太く、頭が小さく見えるほど', defenseResist: 0.45,
   },
   {
     id: 'magic', spriteFamily: 'magic', displayName: '魔法系', role: '高火力の遠距離魔法使い',
@@ -125,6 +145,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 55, damage: 30, moveSpeed: 2.0, target: 'ANY', attackRange: 3.0, attackSpeed: 1300 },
     cost: { gold: 140, count: 2 },
+    bodySize: 32, bodyType: '小柄で猫背ぎみ。ローブでからだが隠れている', defenseResist: -0.1,
   },
   {
     id: 'speed', spriteFamily: 'speed', displayName: '高速系', role: '資源を一気に奪う俊足の暗殺者',
@@ -136,6 +157,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 45, damage: 14, moveSpeed: 4.2, target: 'RESOURCE', attackRange: 1.2, attackSpeed: 700 },
     cost: { gold: 60, count: 4 },
+    bodySize: 26, bodyType: 'とても小さく細い。手足が長くて軽そう', defenseResist: -0.2,
   },
   {
     id: 'flying', spriteFamily: 'flying', displayName: '飛行系', role: '壁を無視して突っ込む空の戦士',
@@ -147,6 +169,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 80, damage: 22, moveSpeed: 3.4, target: 'ANY', attackRange: 1.4, attackSpeed: 1000 },
     cost: { gold: 160, count: 1 },
+    bodySize: 38, bodyType: '胴は細いが翼が大きく横に広い', defenseResist: 0.0,
   },
   {
     id: 'healer', spriteFamily: 'healer', displayName: '回復系', role: '味方を支える癒やしのサポーター',
@@ -158,6 +181,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 70, damage: 8, moveSpeed: 2.2, target: 'ANY', attackRange: 1.4, attackSpeed: 1100 },
     cost: { gold: 120, count: 2 },
+    bodySize: 30, bodyType: '小柄で丸みのあるやさしい体型', defenseResist: 0.0,
   },
   {
     id: 'bomber', spriteFamily: 'bomber', displayName: '爆発系', role: '建物に大ダメージの爆弾魔',
@@ -169,6 +193,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 50, damage: 40, moveSpeed: 2.3, target: 'DEFENSE', attackRange: 1.2, attackSpeed: 1400 },
     cost: { gold: 100, count: 2 },
+    bodySize: 36, bodyType: 'ずんぐりして丸い。おなかが大きい', defenseResist: 0.15,
   },
   {
     id: 'boss_titan', spriteFamily: 'boss-titan', displayName: 'コズミック・ハイドラ', role: '宇宙怪獣（多頭触手・範囲攻撃）',
@@ -180,6 +205,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 1500, damage: 70, moveSpeed: 0.8, target: 'DEFENSE', attackRange: 1.4, attackSpeed: 2000 },
     cost: { gold: 600, count: 1 },
+    bodySize: 96, bodyType: '画面を圧するほど巨大。多頭と触手で横にも大きく広がる', defenseResist: 0.4,
   },
   {
     id: 'boss_artillery', spriteFamily: 'boss-artillery', displayName: 'メカ・カイザー', role: '機械皇帝（超遠距離砲撃・建物優先）',
@@ -191,6 +217,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 800, damage: 110, moveSpeed: 1.0, target: 'ANY', attackRange: 3.5, attackSpeed: 2400 },
     cost: { gold: 550, count: 1 },
+    bodySize: 86, bodyType: '巨大な機械の体。肩の砲塔で上半身が異様に大きい', defenseResist: 0.25,
   },
   {
     id: 'boss_overlord', spriteFamily: 'boss-overlord', displayName: 'ニャースベイダー', role: 'ダークロード（超遅・即死級攻撃）',
@@ -202,6 +229,7 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 1100, damage: 150, moveSpeed: 0.9, target: 'ANY', attackRange: 1.8, attackSpeed: 2600 },
     cost: { gold: 750, count: 1 },
+    bodySize: 92, bodyType: '長身で肩幅の広い逆三角形。マントで下半身まで大きく見える', defenseResist: 0.3,
   },
 ];
 

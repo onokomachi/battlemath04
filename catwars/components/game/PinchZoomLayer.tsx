@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useLayoutEffect } from 'react';
 
 interface Props {
   children: React.ReactNode;
@@ -6,6 +6,13 @@ interface Props {
   maxScale?: number;
   /** 初期スケール（マップが画面に収まるよう調整したい時に使用） */
   initialScale?: number;
+  /**
+   * 中身の実寸(px)。渡すと、表示領域に収まるよう初期倍率を自動計算する。
+   * iPad 横向きで盤面の下が切れていた問題への対応。画面回転にも追従する。
+   */
+  contentSize?: { width: number; height: number };
+  /** 自動フィット時の余白（左右・上下に確保する割合） */
+  fitPadding?: number;
   className?: string;
 }
 
@@ -24,12 +31,46 @@ export const PinchZoomLayer: React.FC<Props> = ({
   minScale = 0.5,
   maxScale = 3,
   initialScale = 1,
+  contentSize,
+  fitPadding = 0.98,
   className,
 }) => {
   const [t, setT] = useState({ scale: initialScale, x: 0, y: 0 });
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastDist = useRef<number | null>(null);
   const lastMid = useRef<{ x: number; y: number } | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const fitScaleRef = useRef(initialScale);
+  // ユーザーが自分でズーム/パンしたあとは、自動フィットで上書きしない
+  const userAdjustedRef = useRef(false);
+
+  /** 表示領域に中身がぴったり収まる倍率を求める */
+  const computeFit = useCallback((): number => {
+    const host = hostRef.current;
+    if (!host || !contentSize) return initialScale;
+    const { clientWidth: w, clientHeight: h } = host;
+    if (w === 0 || h === 0) return initialScale;
+    return Math.min(w / contentSize.width, h / contentSize.height) * fitPadding;
+  }, [contentSize, fitPadding, initialScale]);
+
+  // 初回マウント時と、画面サイズ／回転が変わったときに自動でフィットさせる
+  useLayoutEffect(() => {
+    if (!contentSize) return;
+    const apply = () => {
+      const s = computeFit();
+      fitScaleRef.current = s;
+      if (!userAdjustedRef.current) setT({ scale: s, x: 0, y: 0 });
+    };
+    apply();
+    const host = hostRef.current;
+    if (!host || typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', apply);
+      return () => window.removeEventListener('resize', apply);
+    }
+    const ro = new ResizeObserver(apply);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [computeFit, contentSize]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -47,6 +88,7 @@ export const PinchZoomLayer: React.FC<Props> = ({
         const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
 
         if (lastDist.current != null && lastMid.current) {
+          userAdjustedRef.current = true;
           const dScale = dist / lastDist.current;
           const dx = mid.x - lastMid.current.x;
           const dy = mid.y - lastMid.current.y;
@@ -77,18 +119,26 @@ export const PinchZoomLayer: React.FC<Props> = ({
         // 通常ホイールでもズーム（マップ操作向け）
       }
       e.preventDefault();
+      userAdjustedRef.current = true;
       const factor = e.deltaY < 0 ? 1.12 : 0.89;
       setT((prev) => ({ ...prev, scale: clamp(prev.scale * factor, minScale, maxScale) }));
     },
     [minScale, maxScale]
   );
 
-  const reset = () => setT({ scale: initialScale, x: 0, y: 0 });
-  const zoomBy = (f: number) =>
+  // リセットは「画面にぴったり収まる倍率」に戻す（初期値1に戻すと盤面がはみ出すため）
+  const reset = () => {
+    userAdjustedRef.current = false;
+    setT({ scale: contentSize ? fitScaleRef.current : initialScale, x: 0, y: 0 });
+  };
+  const zoomBy = (f: number) => {
+    userAdjustedRef.current = true;
     setT((prev) => ({ ...prev, scale: clamp(prev.scale * f, minScale, maxScale) }));
+  };
 
   return (
     <div
+      ref={hostRef}
       className={`relative w-full h-full overflow-hidden flex items-center justify-center ${className ?? ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

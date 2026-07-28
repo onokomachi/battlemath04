@@ -63,7 +63,8 @@ export interface BattleEntity {
   hp: number;
   maxHp: number;
   damage: number;
-  team: 'ATTACKER' | 'DEFENDER' | 'ATTACKER_BUILDING';
+  // NEUTRAL = 第3勢力（中立エイリアン・巨大生物）。敵味方の区別なく攻撃し、両陣営から攻撃される。
+  team: 'ATTACKER' | 'DEFENDER' | 'ATTACKER_BUILDING' | 'NEUTRAL';
   targetId?: string | null;
   attackRange: number;
   attackSpeed: number; // ms per attack
@@ -75,7 +76,8 @@ export interface BattleEntity {
   isHidden?: boolean; // For traps
 }
 
-export type TerrainType = 'GRASS' | 'WATER' | 'BRIDGE' | 'ROCK' | 'SWAMP';
+// LAVA = 溶岩。乗っているあいだ継続ダメージ（敵味方・中立すべてに適用）。通行は可能。
+export type TerrainType = 'GRASS' | 'WATER' | 'BRIDGE' | 'ROCK' | 'SWAMP' | 'LAVA';
 
 // ── Daily Buff System（T1〜T4 グラデーション）─────────────────────────────────
 export type BuffTier = 1 | 2 | 3 | 4;
@@ -115,6 +117,39 @@ export interface TerrainTile {
   type: TerrainType;
 }
 
+/** 流星ゾーン: 一定間隔で予告が出て、そのあと範囲ダメージが落ちる（⑤ ステージギミック） */
+export interface MeteorZone {
+  x: number;
+  y: number;
+  /** 効果半径（マス） */
+  radius: number;
+  /** 落下の間隔(ms) */
+  intervalMs: number;
+  /** 予告が出てから着弾までの猶予(ms)。見てから避けられる長さにする */
+  warningMs: number;
+  damage: number;
+}
+
+/** 中立エイリアンの巣: 定期的に湧き、敵味方の区別なく最も近い相手を襲う */
+export interface AlienNest {
+  x: number;
+  y: number;
+  intervalMs: number;
+  /** 同時に存在できる数の上限 */
+  max: number;
+}
+
+/** 巨大生物: 決まった経路を往復し、進路に入ったキャラを攻撃する中立の大型モンスター */
+export interface TitanBeast {
+  /** 往復する経路（両端を行き来する） */
+  path: Coordinates[];
+  moveSpeed: number;
+  damage: number;
+  attackRange: number;
+  attackSpeed: number;
+  hp: number;
+}
+
 export interface BattleMap {
   id: string;
   name: string;
@@ -122,6 +157,10 @@ export interface BattleMap {
   terrain: TerrainTile[];
   enemyBase: { type: BuildingType; x: number; y: number }[];
   playerDeployZone: { xMin: number; xMax: number; yMin: number; yMax: number };
+  /** ステージギミック（いずれも任意。第1〜2章は付けない） */
+  meteorZones?: MeteorZone[];
+  alienNests?: AlienNest[];
+  titan?: TitanBeast;
 }
 
 export interface DeployedBuilding {
@@ -141,4 +180,13 @@ export interface BattleLoadout {
   availableBuildingTypes: BuildingType[];
 }
 
-export const GRID_SIZE = 15;
+// ── 盤面ジオメトリ ────────────────────────────────────────────────────────
+// iPad を横向きに持ってプレイするため、正方形(15×15)から**横長(28×16 = 7:4)**へ変更した。
+// 16:9 よりわずかに縦を残しているのは、上下のUIバーを引いた実表示領域がおおむね 7:4 に
+// なるため（1180×820 の iPad で、上部64px・下部バーを引いた領域に一致させている）。
+export const GRID_W = 28;
+export const GRID_H = 16;
+
+/** 拠点づくりで扱える最大の陣地サイズ。実際の広さはステージごとの自陣ゾーンで決まる。 */
+export const BASE_MAX_W = 10;
+export const BASE_MAX_H = GRID_H;

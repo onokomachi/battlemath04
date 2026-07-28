@@ -83,7 +83,9 @@ export const BUILDING_STATS: Record<BuildingType, {
     buildTime: 1
   },
   [BuildingType.CANNON]: {
-    name: '大砲',
+    // 「大砲」のイラストが手持ちレーザー銃に見えるとの指摘を受け、
+    // 名称も据え置き型であることが伝わる「砲台」に変更（BuildingType自体は互換のため無変更）。
+    name: '砲台',
     cost: { gold: 150 },
     hp: 600,
     // ⑥ バランス調整（旧: damage 20 / range 4 / 攻撃間隔 1000ms = 20 DPS）
@@ -94,7 +96,7 @@ export const BUILDING_STATS: Record<BuildingType, {
     range: 3.2,
     attackSpeed: 1300,
     aimTimeMs: 700,
-    description: '地上ユニットを単体で狙撃する基本の防衛設備。撃つ前に700msの照準時間があり、壁のむこう側はねらえません。',
+    description: '地面に固定された据え置きの砲台。地上ユニットを単体で狙撃します。撃つ前に700msの照準時間があり、壁のむこう側はねらえません。',
     role: '防衛防御 [単体地上専用] (標準防衛)',
     width: 1,
     height: 1,
@@ -103,7 +105,9 @@ export const BUILDING_STATS: Record<BuildingType, {
     buildTime: 15
   },
   [BuildingType.HIDDEN_TESLA]: {
-    name: '隠しテスラ',
+    // 「隠しテスラ」は名前だけでは何の施設か伝わらないとの指摘を受け、
+    // 効果がそのまま伝わる「電撃トラップ」に改名（BuildingType自体は互換のため無変更）。
+    name: '電撃トラップ',
     cost: { gold: 500 },
     hp: 600,
     // ⑥ バランス調整（旧: damage 40 / range 3.5 / 1000ms = 40 DPS → 基本ネコが1.5秒で溶けた）
@@ -113,7 +117,7 @@ export const BUILDING_STATS: Record<BuildingType, {
     range: 2.6,
     attackSpeed: 2000,
     aimTimeMs: 250,
-    description: '地中に隠れており、敵が近づいた瞬間に現れて電撃を放つ罠。射程は短いぶん、不意をつかれると痛い。壁のむこう側はねらえません。',
+    description: '地面に隠れたワナ。敵が近づいた瞬間に飛び出して電撃を放ちます。射程は短いぶん、不意をつかれると痛い。壁のむこう側はねらえません。',
     role: '防衛奇襲 [単体対地対空] (高DPS奇襲)',
     width: 1,
     height: 1,

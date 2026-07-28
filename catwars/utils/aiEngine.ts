@@ -1,4 +1,4 @@
-import { Coordinates, GRID_SIZE } from "../types";
+import { Coordinates, GRID_W, GRID_H } from "../types";
 
 // Node for A* Algorithm
 interface Node {
@@ -12,7 +12,7 @@ interface Node {
 
 // Check if coordinate is within grid bounds
 const isValid = (x: number, y: number) => {
-  return x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
+  return x >= 0 && x < GRID_W && y >= 0 && y < GRID_H;
 };
 
 // Heuristic: Manhattan Distance
@@ -51,7 +51,7 @@ export const findPath = (
 
   // Limit iterations to prevent freezing on unreachable targets
   let iterations = 0;
-  const MAX_ITERATIONS = 500; 
+  const MAX_ITERATIONS = 1600; 
 
   while (openList.length > 0 && iterations < MAX_ITERATIONS) {
     iterations++;
@@ -132,6 +132,8 @@ export const buildTerrainCostMap = (terrain: import('../types').TerrainTile[]): 
       case 'ROCK':  cost = Infinity; break;
       case 'BRIDGE': cost = 3; break;
       case 'SWAMP':  cost = 2; break;
+      // 溶岩は通行可能だが継続ダメージを受けるため、コストを高くして自然に迂回させる
+      case 'LAVA':   cost = 4; break;
       default:       cost = 1;
     }
     map.set(`${tile.x},${tile.y}`, cost);
@@ -158,7 +160,7 @@ export const findPathWithTerrain = (
   openList.push(startNode);
 
   let iterations = 0;
-  const MAX_ITERATIONS = 600;
+  const MAX_ITERATIONS = 1800;
 
   while (openList.length > 0 && iterations < MAX_ITERATIONS) {
     iterations++;

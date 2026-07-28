@@ -2,10 +2,9 @@ import React, { useMemo, useState } from 'react';
 import { CAMPAIGN, ASSIST_LEVELS, CampaignChapter } from '../../data/campaign';
 import { BATTLE_MAP_BY_ID } from '../../data/battleMaps';
 import { BUILDING_STATS } from '../../constants';
-import { BattleLoadout, BuildingType, GRID_SIZE } from '../../types';
+import { BattleLoadout, BuildingType, GRID_W, GRID_H } from '../../types';
 import { useCampaignStore } from '../../store/useCampaignStore';
-import { usePlayerStore } from '../../store/usePlayerStore';
-import { buildPlayerDeployments } from '../../utils/deployPlan';
+import { useBaseStore } from '../../store/useBaseStore';
 import { DailyBuffsPanel } from '../learn/DailyBuffsPanel';
 import { sfx } from '../../utils/audioEngine';
 
@@ -27,12 +26,12 @@ const toughnessStars = (ch: CampaignChapter): number => {
 
 /**
  * 出撃前のステージ（章）選択。
- * ①の一本化により、これが「マップ選択＋作戦立案」の唯一の画面になった。
- * 拠点の配置はここで自動転写のプレビューとして見せるだけで、置き直しはさせない。
+ * ステージによって自陣ゾーンの広さが変わるため、ここで章を決めてから
+ * 次の「陣地づくり」でその広さに合わせて陣地を組む。
  */
 export const StageSelectScreen: React.FC<Props> = ({ loadout, onBack, onStart }) => {
   const { clearedChapters, isUnlocked, assistLevelFor, nextChapterId } = useCampaignStore();
-  const { buildings } = usePlayerStore();
+  const baseStore = useBaseStore();
   const [selectedId, setSelectedId] = useState<string>(() => nextChapterId());
 
   const selected = CAMPAIGN.find(c => c.id === selectedId) ?? CAMPAIGN[0];
@@ -40,12 +39,16 @@ export const StageSelectScreen: React.FC<Props> = ({ loadout, onBack, onStart })
   const unlocked = isUnlocked(selected.id);
   const assist = assistLevelFor(selected.id);
 
+  // このステージ用に組んだ陣地（まだ組んでいなければ空）。実際の編集は次の画面で行う。
   const deployments = useMemo(
-    () => (map ? buildPlayerDeployments(buildings, map, loadout) : []),
-    [buildings, map, loadout],
+    () => baseStore.getLayout(selected.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected.id, baseStore.layouts],
   );
 
   const progress = clearedChapters.length;
+  const zoneW = map ? map.playerDeployZone.xMax - map.playerDeployZone.xMin + 1 : 0;
+  const zoneH = map ? map.playerDeployZone.yMax - map.playerDeployZone.yMin + 1 : 0;
 
   return (
     <div className="min-h-[100dvh] h-[100dvh] flex flex-col overflow-hidden" style={font}>
@@ -148,18 +151,20 @@ export const StageSelectScreen: React.FC<Props> = ({ loadout, onBack, onStart })
           )}
         </div>
 
-        {/* 持ちこむ拠点のプレビュー（①: 作戦立案での置き直しを廃止した代わり） */}
+        {/* この章の戦場と、いま組んである陣地のプレビュー */}
         <div className="mt-3 rounded-2xl border border-white/10 p-3" style={{ background: 'rgba(6,10,24,0.55)' }}>
           <div className="flex items-center justify-between mb-2">
-            <span className="text-white/70 text-xs font-bold" style={fontMono}>持ちこむ拠点</span>
-            <span className="text-white/40 text-[10px]">拠点づくりの配置がそのまま戦場に出ます</span>
+            <span className="text-white/70 text-xs font-bold" style={fontMono}>この章の戦場</span>
+            <span className="text-[#a3e635] text-[10px]">
+              自陣 {zoneW}×{zoneH}マス{zoneW >= 9 ? '（ひろい）' : zoneW <= 5 ? '（せまい）' : ''}
+            </span>
           </div>
           {map && <DeploymentPreview map={map} deployments={deployments} />}
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-white/55">
             <span>🏰 コア×1</span>
             <span>🧱 壁×{deployments.filter(d => d.type === BuildingType.WALL).length}/{loadout.maxWallSlots}</span>
-            <span>💣 大砲×{deployments.filter(d => d.type === BuildingType.CANNON).length}</span>
-            <span>⚡ テスラ×{deployments.filter(d => d.type === BuildingType.HIDDEN_TESLA).length}</span>
+            <span>💣 砲台×{deployments.filter(d => d.type === BuildingType.CANNON).length}</span>
+            <span>⚡ 電撃トラップ×{deployments.filter(d => d.type === BuildingType.HIDDEN_TESLA).length}</span>
             <span>⛺ キャンプ×{deployments.filter(d => d.type === BuildingType.ARMY_CAMP).length}</span>
           </div>
         </div>
@@ -184,7 +189,7 @@ export const StageSelectScreen: React.FC<Props> = ({ loadout, onBack, onStart })
             color: unlocked ? '#f87171' : '#9ca3af',
             boxShadow: unlocked ? '0 0 16px rgba(239,68,68,0.5)' : 'none',
           }}>
-          {unlocked ? `⚔️ 第${selected.no}章に出撃！` : '🔒 前の章をクリアすると開放'}
+          {unlocked ? `🏰 第${selected.no}章の陣地をつくる →` : '🔒 前の章をクリアすると開放'}
         </button>
       </div>
     </div>
@@ -209,9 +214,9 @@ const DeploymentPreview: React.FC<{
 
   return (
     <div className="overflow-x-auto">
-      <div style={{ position: 'relative', width: GRID_SIZE * CELL, height: GRID_SIZE * CELL, margin: '0 auto' }}>
-        {Array.from({ length: GRID_SIZE }, (_, y) =>
-          Array.from({ length: GRID_SIZE }, (_, x) => {
+      <div style={{ position: 'relative', width: GRID_W * CELL, height: GRID_H * CELL, margin: '0 auto' }}>
+        {Array.from({ length: GRID_H }, (_, y) =>
+          Array.from({ length: GRID_W }, (_, x) => {
             const t = terrainAt(x, y);
             const inZone = x >= zone.xMin && x <= zone.xMax && y >= zone.yMin && y <= zone.yMax;
             const d = deployAt(x, y);
@@ -224,6 +229,7 @@ const DeploymentPreview: React.FC<{
                   background: t === 'WATER' ? '#1d4ed8'
                     : t === 'ROCK' ? '#374151'
                     : t === 'SWAMP' ? 'rgba(20,83,45,0.85)'
+                    : t === 'LAVA' ? '#b91c1c'
                     : t === 'BRIDGE' ? '#92400e'
                     : inZone ? 'rgba(56,189,248,0.10)' : 'rgba(255,255,255,0.03)',
                   border: '1px solid rgba(255,255,255,0.04)',
