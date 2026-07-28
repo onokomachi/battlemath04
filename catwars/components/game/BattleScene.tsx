@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { GameState, Troop, BuildingType, BattleEntity, GRID_SIZE } from '../../types';
 import { BUILDING_STATS } from '../../constants';
 import { Button } from '../ui/Button';
-import { Swords, Trophy, Skull, Zap, Heart, Info, X } from '../ui/Icons';
+import { Swords, Trophy, Skull, Zap, Heart } from '../ui/Icons';
 import { buildTerrainCostMap, findPathWithTerrain, TerrainCostMap } from '../../utils/aiEngine';
 import { SeededRNG } from '../../utils/random';
 import { TerrainLayer } from './TerrainLayer';
@@ -234,7 +234,6 @@ export const BattleScene: React.FC<Props> = ({
   // Sensory Juice States
   const [damagedEntities, setDamagedEntities] = useState<Set<string>>(new Set());
   const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
-  const [evidencePanelOpen, setEvidencePanelOpen] = useState(false);
 
   const [battlePaused, setBattlePaused] = useState(false);
   const [quizOpen, setQuizOpen] = useState(false);
@@ -1259,13 +1258,6 @@ export const BattleScene: React.FC<Props> = ({
               <span className="text-base">⚡</span>
               <span className="text-[#facc15] font-bold text-sm">{Math.floor(gold)}</span>
             </div>
-            <button
-              onClick={() => setEvidencePanelOpen(true)}
-              className="bg-slate-800 hover:bg-slate-700 text-white font-extrabold px-3 py-1 text-xs rounded-lg shadow border border-slate-700 flex items-center gap-1.5 transition-all"
-            >
-              <Info size={13} className="text-yellow-400" />
-              <span>バランスの根拠</span>
-            </button>
             <Button variant="secondary" size="xs" onClick={() => onEndBattle(false, { gold: 0 })}>
               全軍撤退（降伏）
             </Button>
@@ -1890,129 +1882,6 @@ export const BattleScene: React.FC<Props> = ({
            )}
          </div>
        </div>
-
-       {/* Authoritative Game Design Evidence & Academic Review Modal */}
-       {evidencePanelOpen && (
-         <div className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center p-4 animate-in fade-in">
-           <div className="bg-slate-900 text-slate-100 rounded-2xl w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl border border-slate-800">
-             
-             {/* Header */}
-             <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
-               <h3 className="text-md font-extrabold text-teal-400 flex items-center gap-1.5 leading-none">
-                 <Info size={18} />
-                 <span>難易度バランスの根拠（エビデンスレベル付き）</span>
-               </h3>
-               <button 
-                 onClick={() => setEvidencePanelOpen(false)}
-                 className="p-1.5 hover:bg-slate-800 rounded-lg text-gray-450 hover:text-white transition-all outline-none"
-               >
-                 <X size={16} />
-               </button>
-             </div>
-
-             {/* Contents */}
-             <div className="p-6 overflow-y-auto space-y-5 text-xs text-gray-300 leading-relaxed">
-               
-               <p className="text-[11px] text-gray-400">
-                 このゲームの難易度は、感覚ではなく次の根拠から逆算して決めています。
-                 エビデンスレベルは <strong className="text-gray-200">1=メタ分析・複数のRCTに支えられた理論</strong>／
-                 <strong className="text-gray-200">2=大規模実証研究</strong>／
-                 <strong className="text-gray-200">3=業界で広く検証された実務知見</strong> の3段階です。
-               </p>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">
-                   ⏱ レベル1: 反応の余地 ── 子どもの処理速度から逆算した Time-To-Kill
-                 </h4>
-                 <p className="text-[11px]">
-                   8〜10歳の選択反応時間は成人より有意に遅いことが、発達的な処理速度研究で一貫して示されています
-                   （Kail 1991 のメタ分析、Der &amp; Deary 2006 の大規模横断研究）。
-                   「やられた → 原因に気づく → 次の手を打つ」の1サイクルには、秒単位の余裕が必要です。
-                 </p>
-                 <p className="text-[11px] mt-1.5">
-                   そこで <strong className="text-gray-100">基本ネコ（HP60）が集中砲火で倒れるまでを、どの章でも4秒以上</strong>
-                   になるよう防衛施設を再調整しました。
-                 </p>
-                 <ul className="list-disc pl-4 mt-1.5 space-y-0.5 text-[11px] text-gray-400">
-                   <li>大砲: 20dmg/1.0秒（20DPS・3.0秒で死亡）→ <strong className="text-gray-200">14dmg/1.3秒（10.8DPS・5.6秒）</strong></li>
-                   <li>隠しテスラ: 40dmg/1.0秒（40DPS・1.5秒で死亡）→ <strong className="text-gray-200">22dmg/2.0秒（11DPS・5.5秒）</strong>。1発は重いが発射は遅い形にしました</li>
-                   <li>加えて、標的をとらえてから初弾までに <strong className="text-gray-200">照準時間（大砲0.7秒）</strong> を設け、被弾を予告するようにしました</li>
-                 </ul>
-               </section>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">
-                   🧱 レベル2: 因果の可読性 ── 壁が砲撃・ビームを遮る
-                 </h4>
-                 <p className="text-[11px]">
-                   以前は防衛施設の索敵が直線距離だけの判定で、壁のむこう側にも撃っていました。
-                   被害の原因を特定できない状況は、難易度の主観的な高さを押し上げ、再挑戦意欲を損ないます
-                   （教育ゲームの難易度知覚については Lomas et al. 2013 CHI、
-                   結果の知覚可能性については Björk &amp; Holopainen 2005 の Perceivable Consequence パターン）。
-                 </p>
-                 <p className="text-[11px] mt-1.5">
-                   現在は<strong className="text-gray-100">壁が射線を遮ります</strong>。壁のかげは安全地帯になり、
-                   「壁をこわしてから進む／かげを通って回りこむ」という判断が意味を持ちます。
-                   ただし<strong className="text-gray-100">飛行系は壁のかげに隠れられません</strong>（そのかわり壁を越えて直進できます）。
-                 </p>
-               </section>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">
-                   🛡 レベル3: 役割の直交性 ── タンクがヘイトを引き受ける
-                 </h4>
-                 <p className="text-[11px]">
-                   Adams &amp; Rollings <em>on Game Design</em> が説くとおり、ユニットの役割は
-                   「優先ターゲットが異なる（直交する）」ときに戦術的な意思決定が生まれます。
-                   しかし以前の実装では、防衛施設が<strong className="text-gray-100">配列の先頭にいる相手</strong>を撃っていたため、
-                   「タンクで砲撃を引きつける」という戦術が成立していませんでした。
-                 </p>
-                 <p className="text-[11px] mt-1.5">
-                   現在は<strong className="text-gray-100">ヘイト値 → 距離</strong>の順で標的を選びます。
-                   タンク系（ニャイアント）とボス級はヘイト3.0、爆発系は1.6、その他は1.0です。
-                 </p>
-               </section>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">
-                   🛟 レベル2＋3: 段階的な難易度と「サポートモード」
-                 </h4>
-                 <p className="text-[11px]">
-                   n≈3万の大規模デザイン実験（Lomas, Patel, Forlizzi &amp; Koedinger 2013, CHI）では、
-                   教育ゲームは<strong className="text-gray-100">開発者の直感より易しいほうが継続率が高い</strong>と報告されています。
-                   そこで第1〜2章は勝率85%前後を、最終章でも55%前後を目標に設定しました。
-                 </p>
-                 <p className="text-[11px] mt-1.5">
-                   さらに、同じ章で2回まけると「サポートモード」が入り、敵の攻撃が弱くなります。
-                   調整は<strong className="text-gray-100">やさしくなる方向にだけ</strong>働き、
-                   勝っている人を密かに難しくすることはしません（Hunicke 2005）。
-                   また、隠れた調整は気づかれたときに不信を生むため（Baldwin et al. 2014）、
-                   作動中は画面に明示しています。
-                 </p>
-               </section>
-
-               <div className="bg-teal-950/50 p-3 rounded-lg border border-teal-500/20 text-[11px] text-teal-300">
-                 <strong>💡 いまの仕様での定石:</strong><br />
-                 ① タンク系を先に出して大砲のねらいを固定する → ② その間に近接・遠距離をよこから回りこませる
-                 → ③ 壁のかげで部隊をためてから、レイジで一気に押し込む。
-                 遠距離系（射程3.5）は大砲（射程3.2）より遠くから撃てるので、削り役としても有効です。
-               </div>
-
-             </div>
-
-             {/* Footer */}
-             <div className="p-4 border-t border-slate-800 bg-slate-950 text-center">
-               <button 
-                 onClick={() => setEvidencePanelOpen(false)}
-                 className="bg-teal-600 hover:bg-teal-500 text-white font-bold py-1.5 px-6 text-xs rounded-lg shadow-md transition-all active:scale-95 border-b border-teal-800"
-               >
-                 解説を閉じて戦闘へ戻る
-               </button>
-             </div>
-
-           </div>
-         </div>
-       )}
 
        {/* 戦闘中クイズ（出撃前に選んだ範囲からランダム出題 → ⚡エナジー獲得）
            ③ 報酬は問題の難易度・所要工程に応じて傾斜配分される（InBattleQuiz 側で算出）。 */}
