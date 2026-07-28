@@ -88,7 +88,7 @@ export const RangeSelect: React.FC<Props> = ({ lockedUnits, onBack, onConfirm })
             background: 'rgba(239,68,68,0.18)', border: '2px solid #ef4444', color: '#f87171',
             boxShadow: '0 0 14px rgba(239,68,68,0.5)',
           }}>
-          この範囲で 作戦立案へ →
+          この範囲で ステージえらびへ →
         </button>
       </div>
     </div>

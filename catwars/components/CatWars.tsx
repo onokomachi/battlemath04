@@ -5,9 +5,12 @@ import { usePlayerStore } from '../store/usePlayerStore';
 import { useProgressStore } from '../store/useProgressStore';
 import { useBattleSetupStore } from '../store/useBattleSetupStore';
 import { computeBattleLoadout } from '../utils/battleLoadout';
-import { BATTLE_MAPS } from '../data/battleMaps';
+import { BATTLE_MAP_BY_ID, BATTLE_MAPS } from '../data/battleMaps';
+import { buildPlayerDeployments } from '../utils/deployPlan';
+import { CHAPTER_BY_ID, CAMPAIGN, effectiveDifficulty } from '../data/campaign';
+import { useCampaignStore } from '../store/useCampaignStore';
 import { BattleScene } from './game/BattleScene';
-import { BattleSetupScreen } from './game/BattleSetupScreen';
+import { StageSelectScreen } from './game/StageSelectScreen';
 import { RangeSelect } from './game/RangeSelect';
 import { ArmyRosterScreen } from './army/ArmyRosterScreen';
 import { DailyBuffsPanel } from './learn/DailyBuffsPanel';
@@ -18,7 +21,9 @@ import { sfx } from '../utils/audioEngine';
 const font = { fontFamily: '"M PLUS Rounded 1c", sans-serif' };
 const fontMono = { fontFamily: 'Orbitron, monospace' };
 
-type View = 'home' | 'base' | 'army' | 'range' | 'setup' | 'battle' | 'buffs' | 'mercs';
+// ① 「作戦立案(setup)」を廃止。拠点づくりが唯一の拠点編集画面になり、
+//    出撃は 範囲えらび → ステージえらび → 戦闘 の3ステップに短縮された。
+type View = 'home' | 'base' | 'army' | 'range' | 'stage' | 'battle' | 'buffs' | 'mercs';
 
 interface Props {
   onExit: () => void;
@@ -28,12 +33,13 @@ interface Props {
 export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   const [view, setView] = useState<View>('home');
   const { resources, buildings, troops, lastTick, addResources, setGameState } = usePlayerStore();
-  const { selectedMapId, playerDeployments, commitPlan, resetBattleSession } = useBattleSetupStore();
+  const { resetBattleSession } = useBattleSetupStore();
   const {
     getTodayDailyStars, dailyStreak, todayAnswered, dailyGoal, updateDailyStreak,
   } = useProgressStore();
+  const campaign = useCampaignStore();
 
-  const [enemyLayout, setEnemyLayout] = useState<{ type: BuildingType; x: number; y: number }[]>([]);
+  const [activeChapterId, setActiveChapterId] = useState<string>(CAMPAIGN[0].id);
   const [quizSubtopics, setQuizSubtopics] = useState<string[]>([]);
   const gameState: GameState = { resources, buildings, troops, lastTick };
   const loadout = useMemo(() => computeBattleLoadout(buildings), [buildings]);
@@ -55,6 +61,8 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
 
   const handleEndBattle = (win: boolean, loot: { gold: number }) => {
     if (win) addResources(Math.round(loot.gold));
+    // 章の結果を記録（勝敗で連敗数が更新され、サポートモードの判定に反映される）
+    campaign.recordResult(activeChapterId, win);
     setView('home');
   };
 
@@ -66,20 +74,19 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
     return (
       <RangeSelect
         onBack={() => setView('home')}
-        onConfirm={(subs) => { setQuizSubtopics(subs); setView('setup'); }}
+        onConfirm={(subs) => { setQuizSubtopics(subs); setView('stage'); }}
       />
     );
   }
 
-  if (view === 'setup') {
+  if (view === 'stage') {
     return (
-      <BattleSetupScreen
+      <StageSelectScreen
         loadout={loadout}
         onBack={() => setView('home')}
-        onStartBattle={(mapId, deployments) => {
-          const map = BATTLE_MAPS.find(m => m.id === mapId) ?? BATTLE_MAPS[0];
-          commitPlan(mapId, deployments);
-          setEnemyLayout(map.enemyBase);
+        onStart={(chapterId) => {
+          setActiveChapterId(chapterId);
+          campaign.recordAttempt(chapterId);
           setView('battle');
         }}
       />
@@ -87,14 +94,21 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   }
 
   if (view === 'battle') {
-    const map = BATTLE_MAPS.find(m => m.id === selectedMapId) ?? BATTLE_MAPS[0];
+    const chapter = CHAPTER_BY_ID[activeChapterId] ?? CAMPAIGN[0];
+    const map = BATTLE_MAP_BY_ID[chapter.mapId] ?? BATTLE_MAPS[0];
+    const assist = campaign.assistLevelFor(chapter.id);
+    // ① 拠点づくりの配置を、そのまま戦場の自陣ゾーンへ転写する（置き直しは不要）
+    const deployments = buildPlayerDeployments(buildings, map, loadout);
     return (
       <BattleScene
         attackerState={gameState}
-        defenderBuildings={enemyLayout}
-        playerDeployments={playerDeployments}
+        defenderBuildings={map.enemyBase}
+        playerDeployments={deployments}
         battleMap={map}
         loadout={loadout}
+        chapter={chapter}
+        difficulty={effectiveDifficulty(chapter, assist)}
+        assistLevel={assist}
         quizSubtopics={quizSubtopics}
         onEndBattle={handleEndBattle}
       />
@@ -103,6 +117,9 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
 
   // ── ハブ（ホーム）───────────────────────────
   const dailyProgress = Math.min(1, todayAnswered / Math.max(1, dailyGoal));
+  const clearedCount = campaign.clearedChapters.length;
+  const nextChapter = CHAPTER_BY_ID[campaign.nextChapterId()];
+  const allCleared = clearedCount >= CAMPAIGN.length;
 
   const StatChip: React.FC<{ icon: string; value: React.ReactNode; color: string }> = ({ icon, value, color }) => (
     <div className="flex items-center gap-1 border rounded-full px-2.5 py-1"
@@ -142,11 +159,25 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
         </div>
       </div>
 
+      {/* ストーリー進行 */}
+      <div className="px-5 pt-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-white/60 text-[11px]">
+            {allCleared ? '👑 銀河にへいわがもどった' : `つぎの戦い：第${nextChapter.no}章「${nextChapter.title}」`}
+          </span>
+          <span className="text-[#f87171] text-[11px]" style={fontMono}>{clearedCount}/{CAMPAIGN.length}章</span>
+        </div>
+        <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-500"
+            style={{ width: `${(clearedCount / CAMPAIGN.length) * 100}%`, background: 'linear-gradient(90deg,#f87171,#facc15)' }} />
+        </div>
+      </div>
+
       {/* Big actions */}
       <div className="grid grid-cols-2 gap-3 px-4 pt-4">
-        <HubButton icon="⚔️" label="出撃！" sub="範囲をえらんで敵拠点を襲撃" color="#ef4444"
+        <HubButton icon="⚔️" label="出撃！" sub={allCleared ? '全章クリア！ 好きな章に再挑戦' : `第${nextChapter.no}章「${nextChapter.title}」へ`} color="#ef4444"
           onClick={() => { resetBattleSession(); setView('range'); }} big />
-        <HubButton icon="🏰" label="拠点づくり" sub="💠クレジットで施設を建設" color="#38bdf8"
+        <HubButton icon="🏰" label="拠点づくり" sub="ここで組んだ拠点が戦場に出る" color="#38bdf8"
           onClick={() => setView('base')} />
         <HubButton icon="🐱" label="ネコ図鑑" sub="部隊のレベル・進化" color="#a3e635"
           onClick={() => setView('army')} />
