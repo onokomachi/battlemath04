@@ -163,8 +163,8 @@ export const StageSelectScreen: React.FC<Props> = ({ loadout, onBack, onStart })
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-white/55">
             <span>🏰 コア×1</span>
             <span>🧱 壁×{deployments.filter(d => d.type === BuildingType.WALL).length}/{loadout.maxWallSlots}</span>
-            <span>💣 大砲×{deployments.filter(d => d.type === BuildingType.CANNON).length}</span>
-            <span>⚡ テスラ×{deployments.filter(d => d.type === BuildingType.HIDDEN_TESLA).length}</span>
+            <span>💣 砲台×{deployments.filter(d => d.type === BuildingType.CANNON).length}</span>
+            <span>⚡ 電撃トラップ×{deployments.filter(d => d.type === BuildingType.HIDDEN_TESLA).length}</span>
             <span>⛺ キャンプ×{deployments.filter(d => d.type === BuildingType.ARMY_CAMP).length}</span>
           </div>
         </div>

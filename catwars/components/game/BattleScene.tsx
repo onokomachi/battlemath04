@@ -648,7 +648,7 @@ export const BattleScene: React.FC<Props> = ({
       });
       // 着弾から600ms たったものは表示から消す
       const before = meteorsRef.current.length;
-      meteorsRef.current = meteorsRef.current.filter(m => now - m.impactAt < 600);
+      meteorsRef.current = meteorsRef.current.filter(m => now - m.impactAt < 900);
       if (changed || meteorsRef.current.length !== before) setMeteors([...meteorsRef.current]);
     }
 
@@ -1327,12 +1327,44 @@ export const BattleScene: React.FC<Props> = ({
            0%, 100% { transform: scale(1); }
            50% { transform: scale(1.07); }
          }
+         @keyframes cw-alien-float {
+           0%, 100% { transform: translateY(0) rotate(-3deg); }
+           50% { transform: translateY(-5px) rotate(3deg); }
+         }
          @keyframes cw-meteor-warn {
            0%, 100% { opacity: 0.30; transform: scale(0.9); }
            50% { opacity: 0.75; transform: scale(1.04); }
          }
+         @keyframes cw-meteor-scan {
+           0% { transform: rotate(0deg); }
+           100% { transform: rotate(360deg); }
+         }
+         @keyframes cw-meteor-comet-trail {
+           0%, 100% { opacity: 0.6; }
+           50% { opacity: 1; }
+         }
+         @keyframes cw-meteor-shock-ring {
+           0% { transform: scale(0.2); opacity: 0.9; }
+           100% { transform: scale(1); opacity: 0; }
+         }
+         @keyframes cw-meteor-debris {
+           0% { transform: translate(0, 0) rotate(0deg) scale(1); opacity: 1; }
+           100% { transform: translate(var(--dx), var(--dy)) rotate(180deg) scale(0.3); opacity: 0; }
+         }
+         @keyframes cw-meteor-scorch-fade {
+           0% { opacity: 0.85; }
+           100% { opacity: 0; }
+         }
+         @keyframes cw-meteor-flash {
+           0% { opacity: 1; transform: scale(0.6); }
+           100% { opacity: 0; transform: scale(1.6); }
+         }
          @media (prefers-reduced-motion: reduce) {
-           .cw-battle-aura, .cw-meteor-ring { animation: none; }
+           .cw-battle-aura, .cw-meteor-ring, .cw-meteor-scan, .cw-meteor-comet,
+           .cw-meteor-shock, .cw-meteor-debris-bit, .cw-meteor-scorch, .cw-meteor-flash,
+           [style*="cw-titan-breathe"], [style*="cw-alien-float"] {
+             animation: none !important;
+           }
          }
          .building-3d {
            box-shadow:
@@ -1569,29 +1601,127 @@ export const BattleScene: React.FC<Props> = ({
               );
             })}
 
-            {/* 流星の予告円 → 着弾（予告が出てから約1.7秒あるので、見てから逃がせる） */}
+            {/* 流星の予告 → 落下 → 着弾。絵文字1個の「スタンプ感」を避け、
+                レーダー走査・カウントダウンリング・彗星の落下軌道・爆発の衝撃波と
+                デブリ・こげ跡まで多層のエフェクトで表現する（既存のBOLT/SHOCKヒット演出と
+                同じ「発光レイヤーの重ね合わせ」手法に統一）。 */}
             {meteors.map(m => {
               const now2 = Date.now();
               const impacted = now2 >= m.impactAt;
+              const sinceImpact = now2 - m.impactAt;
               const size = m.zone.radius * 2 * 40;
-              const left = m.zone.x * 40 + 20 - size / 2;
-              const top = m.zone.y * 40 + 20 - size / 2;
-              const prog = Math.min(1, (now2 - m.warnedAt) / Math.max(1, m.impactAt - m.warnedAt));
+              const cx = m.zone.x * 40 + 20;
+              const cy = m.zone.y * 40 + 20;
+              const left = cx - size / 2;
+              const top = cy - size / 2;
+              const totalMs = Math.max(1, m.impactAt - m.warnedAt);
+              const prog = Math.min(1, (now2 - m.warnedAt) / totalMs);
+              // カウントダウンリング: 残り時間が減るほど円が閉じていく（conic-gradientで残量を表現）
+              const remainDeg = Math.max(0, 360 * (1 - prog));
+
+              if (!impacted) {
+                // 彗星は画面外(右上)から目標地点へ、予告時間ぶんかけて落ちてくる
+                const cometStartX = cx + 150;
+                const cometStartY = cy - 150;
+                const cometX = cometStartX + (cx - cometStartX) * prog;
+                const cometY = cometStartY + (cy - cometStartY) * prog;
+                return (
+                  <React.Fragment key={m.id}>
+                    {/* 地面のターゲットサークル（レーダー走査つき） */}
+                    <div className="absolute rounded-full pointer-events-none cw-meteor-ring"
+                      style={{
+                        left, top, width: size, height: size, zIndex: 56,
+                        border: '2px dashed rgba(251,146,60,0.85)',
+                        background: `radial-gradient(circle, rgba(251,146,60,${0.08 + prog * 0.18}), transparent 72%)`,
+                        boxShadow: '0 0 16px rgba(251,146,60,0.5)',
+                        animation: 'cw-meteor-warn 0.6s ease-in-out infinite',
+                      }}>
+                      {/* カウントダウンリング（残り時間ぶんだけ光の弧が残る） */}
+                      <div className="absolute inset-[3px] rounded-full pointer-events-none"
+                        style={{
+                          background: `conic-gradient(rgba(254,215,170,0.95) ${remainDeg}deg, transparent ${remainDeg}deg)`,
+                          WebkitMask: 'radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px))',
+                          mask: 'radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px))',
+                        }} />
+                      {/* レーダー走査線 */}
+                      <div className="absolute inset-0 cw-meteor-scan" style={{ animation: 'cw-meteor-scan 1.1s linear infinite' }}>
+                        <div style={{
+                          position: 'absolute', left: '50%', top: '50%', width: '50%', height: 2,
+                          background: 'linear-gradient(90deg, rgba(251,191,36,0.9), transparent)',
+                          transformOrigin: '0 50%',
+                        }} />
+                      </div>
+                    </div>
+                    {/* 落下中の彗星本体（尾を引きながら目標へ接近） */}
+                    <div className="absolute pointer-events-none cw-meteor-comet"
+                      style={{
+                        left: cometX, top: cometY, zIndex: 62,
+                        width: 14, height: 14, borderRadius: '9999px',
+                        transform: 'translate(-50%,-50%)',
+                        background: 'radial-gradient(circle, #fff7ed, #fb923c 55%, #c2410c 85%)',
+                        boxShadow: '0 0 14px rgba(251,146,60,0.95), 0 0 28px rgba(251,146,60,0.55)',
+                        animation: 'cw-meteor-comet-trail 0.4s ease-in-out infinite',
+                      }}>
+                      <div style={{
+                        position: 'absolute', right: '90%', top: '50%', width: 46, height: 5,
+                        background: 'linear-gradient(90deg, transparent, rgba(251,191,36,0.75))',
+                        transform: `translateY(-50%) rotate(${Math.atan2(cometY - cometStartY, cometX - cometStartX) * 180 / Math.PI}deg)`,
+                        transformOrigin: '100% 50%',
+                        borderRadius: 4,
+                      }} />
+                    </div>
+                  </React.Fragment>
+                );
+              }
+
+              // ── 着弾: 衝撃波リング×2 + フラッシュ + 放射状デブリ + じわっと消えるこげ跡 ──
+              const debris = Array.from({ length: 8 }, (_, i) => {
+                const ang = (i / 8) * Math.PI * 2;
+                const dist = size * 0.6;
+                return { dx: Math.cos(ang) * dist, dy: Math.sin(ang) * dist, ang };
+              });
               return (
-                <div key={m.id} className="absolute rounded-full pointer-events-none cw-meteor-ring"
-                  style={{
-                    left, top, width: size, height: size, zIndex: 57,
-                    border: impacted ? '4px solid rgba(255,237,213,0.95)' : '3px dashed rgba(251,146,60,0.9)',
-                    background: impacted
-                      ? 'radial-gradient(circle, rgba(255,237,213,0.75), rgba(239,68,68,0.25) 60%, transparent 72%)'
-                      : `radial-gradient(circle, rgba(251,146,60,${0.10 + prog * 0.25}), transparent 70%)`,
-                    boxShadow: impacted ? '0 0 40px rgba(251,146,60,0.95)' : '0 0 16px rgba(251,146,60,0.55)',
-                    animation: impacted ? undefined : 'cw-meteor-warn 0.55s ease-in-out infinite',
-                  }}>
-                  {!impacted && (
-                    <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-2xl">☄️</span>
+                <React.Fragment key={m.id}>
+                  {/* こげ跡（一番下のレイヤー・ゆっくり消える） */}
+                  <div className="absolute rounded-full pointer-events-none cw-meteor-scorch"
+                    style={{
+                      left: cx - size * 0.55, top: cy - size * 0.55, width: size * 1.1, height: size * 1.1, zIndex: 20,
+                      background: 'radial-gradient(circle, rgba(40,20,10,0.55), transparent 70%)',
+                      animation: 'cw-meteor-scorch-fade 0.9s ease-out forwards',
+                    }} />
+                  {/* フラッシュ */}
+                  {sinceImpact < 220 && (
+                    <div className="absolute rounded-full pointer-events-none cw-meteor-flash"
+                      style={{
+                        left: cx - size * 0.5, top: cy - size * 0.5, width: size, height: size, zIndex: 63,
+                        background: 'radial-gradient(circle, #fffbeb, #fde68a 40%, transparent 72%)',
+                        animation: 'cw-meteor-flash 0.22s ease-out forwards',
+                      }} />
                   )}
-                </div>
+                  {/* 衝撃波リング（2重） */}
+                  {[0, 120].map(delay => (
+                    <div key={delay} className="absolute rounded-full pointer-events-none cw-meteor-shock"
+                      style={{
+                        left, top, width: size, height: size, zIndex: 61,
+                        border: '3px solid rgba(255,224,178,0.9)',
+                        animation: `cw-meteor-shock-ring 0.6s ease-out ${delay}ms forwards`,
+                      }} />
+                  ))}
+                  {/* 放射状デブリ */}
+                  {sinceImpact < 500 && debris.map((d, i) => (
+                    <div key={i} className="absolute pointer-events-none cw-meteor-debris-bit"
+                      style={{
+                        left: cx, top: cy, zIndex: 62,
+                        width: 8, height: 8, borderRadius: 2,
+                        background: i % 2 === 0 ? '#fb923c' : '#fde68a',
+                        transform: `rotate(${(d.ang * 180) / Math.PI}deg)`,
+                        boxShadow: '0 0 6px rgba(251,146,60,0.8)',
+                        ['--dx']: `${d.dx}px`, ['--dy']: `${d.dy}px`,
+                        animation: 'cw-meteor-debris 0.5s ease-out forwards',
+                      } as React.CSSProperties}
+                    />
+                  ))}
+                </React.Fragment>
               );
             })}
 
@@ -1692,20 +1822,34 @@ export const BattleScene: React.FC<Props> = ({
                               <div className="absolute w-4 h-1.5 bg-blue-900/40 rounded-full bottom-0 left-1/2 -translate-x-1/2 blur-[1px]" />
                             )}
                             {(() => {
-                              // 中立勢力（エイリアン・ヌシ）はネコではないので、専用の見た目にする
+                              // 中立勢力（エイリアン・ヌシ）はネコではないので、専用スプライトを使う。
+                              // 絵文字1文字だと「スタンプ感」が出るため、生成した専用イラストに
+                              // 発光・浮遊アニメーションを重ねてリッチに見せる。
                               if (e.team === 'NEUTRAL') {
                                 const isTitan = e.subType === 'titan';
                                 return (
-                                  <div className="w-full h-full flex items-center justify-center select-none"
-                                    style={{
-                                      fontSize: isTitan ? 84 : 26,
-                                      lineHeight: 1,
-                                      filter: isTitan
-                                        ? 'drop-shadow(0 0 14px rgba(168,85,247,0.95)) saturate(1.4)'
-                                        : 'drop-shadow(0 0 7px rgba(74,222,128,0.9))',
-                                      animation: isTitan ? 'cw-titan-breathe 2.6s ease-in-out infinite' : undefined,
-                                    }}>
-                                    {isTitan ? '🦑' : '👾'}
+                                  <div className="w-full h-full flex items-center justify-center select-none relative"
+                                    style={{ animation: isTitan ? 'cw-titan-breathe 2.6s ease-in-out infinite' : 'cw-alien-float 1.4s ease-in-out infinite' }}>
+                                    <div className="absolute rounded-full pointer-events-none"
+                                      style={{
+                                        inset: isTitan ? -14 : -6,
+                                        background: isTitan
+                                          ? 'radial-gradient(circle, rgba(168,85,247,0.35), transparent 70%)'
+                                          : 'radial-gradient(circle, rgba(192,132,252,0.4), transparent 70%)',
+                                        filter: 'blur(4px)',
+                                      }} />
+                                    <img
+                                      src={`/assets/sprites/chars/${isTitan ? 'titan' : 'alien'}-1.png`}
+                                      alt={e.subType}
+                                      style={{
+                                        width: '100%', height: '100%', objectFit: 'contain',
+                                        imageRendering: 'crisp-edges', position: 'relative',
+                                        filter: isTitan
+                                          ? 'drop-shadow(0 0 10px rgba(168,85,247,0.75))'
+                                          : 'drop-shadow(0 0 6px rgba(192,132,252,0.7))',
+                                      }}
+                                      draggable={false}
+                                    />
                                   </div>
                                 );
                               }
