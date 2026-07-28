@@ -7,6 +7,7 @@ import Keypad from '../../../components/Keypad';
 import FractionText, { PartialFractionDisplay } from '../../../components/FractionText';
 import GuidedAnswerHost from '../../../components/guided/GuidedAnswerHost';
 import { sfx } from '../../utils/audioEngine';
+import { problemRewardMultiplier, rewardTierLabel } from '../../data/problemWeights';
 
 // 戦闘中クイズで扱う問題タイプ（コンパクトに解けるものだけに限定）
 const SAFE_TYPES = new Set(['text', 'guided']);
@@ -17,8 +18,8 @@ const isServable = (p: Problem): boolean => {
 
 interface Props {
   subtopics: string[];
-  /** 正解で得られる基本エナジー */
-  reward?: number;
+  /** 難易度1.0相当の問題を正解したときの基準エナジー。実際の獲得量はこれに重みをかける */
+  baseReward?: number;
   onReward: (energy: number) => void;
   onClose: () => void;
 }
@@ -26,8 +27,14 @@ interface Props {
 /**
  * 戦闘中に、出撃前に選んだ範囲からランダムに問題を出題するミニクイズ。
  * 正解すると ⚡エナジー を獲得（連続正解でボーナス）。battlemath04 の問題・採点をそのまま利用。
+ *
+ * ③ 報酬は問題ごとに変わる:
+ *    獲得⚡ = baseReward × 重み(0.6〜2.0)
+ *    重み = サブトピックの難易度(difficultyMap 1〜5) × 所要工程係数(問題タイプから推定)
+ *    → 一瞬で答えられる選択肢問題は約20⚡、何工程もある筆算は約68⚡。
+ *    根拠は catwars/data/problemWeights.ts のコメントを参照。
  */
-export const InBattleQuiz: React.FC<Props> = ({ subtopics, reward = 40, onReward, onClose }) => {
+export const InBattleQuiz: React.FC<Props> = ({ subtopics, baseReward = 34, onReward, onClose }) => {
   // 出題プール（選択範囲から、戦闘中に解ける問題だけを大量に抽出してシャッフル）
   const pool = useMemo(() => getMixedProblemSet(subtopics, 999).filter(isServable), [subtopics]);
   const idxRef = useRef(0);
@@ -50,11 +57,16 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, reward = 40, onReward
   const keypadLayout = useMemo(() => (problem ? generateBattleKeypadLayout(problem) : undefined), [problem]);
   const isFractionKeypad = useMemo(() => !!keypadLayout?.some(r => r.includes('と')), [keypadLayout]);
 
+  // この問題の重み（難易度 × 所要工程）。出題中に表示して「なぜ多いのか」を伝える。
+  const multiplier = useMemo(() => problemRewardMultiplier(problem), [problem]);
+  const problemReward = Math.round(baseReward * multiplier);
+  const tier = rewardTierLabel(multiplier);
+
   const grant = useCallback((correct: boolean) => {
     if (correct) {
       const newCombo = combo + 1;
-      const bonus = newCombo % 3 === 0 ? reward : 0; // 3連続ごとにボーナス
-      const total = reward + bonus;
+      const bonus = newCombo % 3 === 0 ? problemReward : 0; // 3連続ごとにボーナス
+      const total = problemReward + bonus;
       setCombo(newCombo);
       setGained(total);
       setFeedback('correct');
@@ -67,7 +79,7 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, reward = 40, onReward
       sfx.incorrect();
       setTimeout(() => setFeedback(null), 700);
     }
-  }, [combo, reward, onReward, nextProblem]);
+  }, [combo, problemReward, onReward, nextProblem]);
 
   const submit = useCallback(() => {
     if (!problem || feedback === 'correct') return;
@@ -101,6 +113,16 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, reward = 40, onReward
         {combo > 0 && (
           <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/40">
             {combo} コンボ！
+          </span>
+        )}
+        {problem && (
+          <span className="text-[11px] font-black px-2 py-0.5 rounded-full whitespace-nowrap"
+            style={{
+              background: `${tier?.color ?? '#38bdf8'}1f`,
+              border: `1px solid ${tier?.color ?? '#38bdf8'}66`,
+              color: tier?.color ?? '#38bdf8',
+            }}>
+            この問題 +{problemReward}⚡{tier ? ` ${tier.label}` : ''}
           </span>
         )}
         <button onClick={onClose} className="ml-auto text-white/60 hover:text-white text-sm px-3 py-1 rounded-lg border border-white/15">
@@ -162,7 +184,7 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, reward = 40, onReward
                 <button onClick={submit}
                   className="w-full max-w-xl mt-3 py-3 rounded-xl font-bold text-lg text-white transition-all active:scale-95"
                   style={{ background: 'rgba(250,204,21,0.18)', border: '2px solid #facc15', color: '#facc15' }}>
-                  解答してエナジーGET ⚡
+                  解答して +{problemReward}⚡ GET
                 </button>
               </div>
             )}

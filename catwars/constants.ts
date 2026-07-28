@@ -15,6 +15,10 @@ export const BUILDING_STATS: Record<BuildingType, {
   icon: string;
   damage?: number;
   range?: number;
+  /** 攻撃間隔(ms)。未指定なら 1000ms 扱い */
+  attackSpeed?: number;
+  /** 新しい標的をとらえてから初弾を撃つまでの「照準時間」(ms)。予告として機能する */
+  aimTimeMs?: number;
   buildTime: number; // Seconds
 }> = {
   [BuildingType.TOWN_HALL]: {
@@ -82,9 +86,15 @@ export const BUILDING_STATS: Record<BuildingType, {
     name: '大砲',
     cost: { gold: 150 },
     hp: 600,
-    damage: 20,
-    range: 4,
-    description: '地上ユニット一ボットを単体狙撃する基本的な防衛設備です。攻撃速度が一定で、近接ユニットに有効です。',
+    // ⑥ バランス調整（旧: damage 20 / range 4 / 攻撃間隔 1000ms = 20 DPS）
+    //   → 10.8 DPS。基本ネコ(HP60)が倒れるまで 5.6秒（旧 3.0秒）。
+    //   根拠と目標値は catwars/data/campaign.ts 冒頭および docs/CATWARS_DESIGN.md を参照。
+    //   射程を 3.2 にしたことで、遠距離系(射程3.5)が一方的に削れる「相性」が成立する。
+    damage: 14,
+    range: 3.2,
+    attackSpeed: 1300,
+    aimTimeMs: 700,
+    description: '地上ユニットを単体で狙撃する基本の防衛設備。撃つ前に700msの照準時間があり、壁のむこう側はねらえません。',
     role: '防衛防御 [単体地上専用] (標準防衛)',
     width: 1,
     height: 1,
@@ -96,9 +106,14 @@ export const BUILDING_STATS: Record<BuildingType, {
     name: '隠しテスラ',
     cost: { gold: 500 },
     hp: 600,
-    damage: 40,
-    range: 3.5,
-    description: '地中に隠されており、敵兵士が侵入半径に接触した瞬間に姿を現し、強力な電撃をお見舞いする防御罠です。',
+    // ⑥ バランス調整（旧: damage 40 / range 3.5 / 1000ms = 40 DPS → 基本ネコが1.5秒で溶けた）
+    //   → 11 DPS・射程2.6。「1発が重いが発射が遅い」形にして奇襲の鋭さは残しつつ、
+    //   最難関の第8章（防衛威力×1.3）でも基本ネコのTTKが4.2秒を下回らないようにした。
+    damage: 22,
+    range: 2.6,
+    attackSpeed: 2000,
+    aimTimeMs: 250,
+    description: '地中に隠れており、敵が近づいた瞬間に現れて電撃を放つ罠。射程は短いぶん、不意をつかれると痛い。壁のむこう側はねらえません。',
     role: '防衛奇襲 [単体対地対空] (高DPS奇襲)',
     width: 1,
     height: 1,

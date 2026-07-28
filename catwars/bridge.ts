@@ -13,16 +13,30 @@ import { usePlayerStore } from './store/usePlayerStore';
 import { useProgressStore } from './store/useProgressStore';
 import { useArmyStore } from './store/useArmyStore';
 import { CHARACTERS } from './data/characters';
+import { difficultyFactor, difficultyOfSubtopic } from './data/problemWeights';
 
-export const CREDIT_PER_CORRECT = 12;   // 正解1問あたりのクレジット(CR)
-export const ENERGY_PER_CORRECT = 2;    // 正解1問あたりのエナジー(EN・当日)
-export const STUDY_XP_PER_CORRECT = 4;  // 正解1問あたり、各スターター系統へ配分するXP
+export const CREDIT_PER_CORRECT = 12;   // 難易度3(標準)の問題1問あたりのクレジット(CR)
+export const ENERGY_PER_CORRECT = 2;    // 難易度3の問題1問あたりのエナジー(EN・当日)
+export const STUDY_XP_PER_CORRECT = 4;  // 難易度3の問題1問あたり、各スターター系統へ配分するXP
 
 const STARTER_IDS = CHARACTERS.filter(c => c.isStarter).map(c => c.id);
 
 /**
+ * ③ 学習報酬の傾斜配分。
+ * recordAttempt からは単元(サブトピック)名しか渡ってこないため、ここでは
+ * `difficultyMap` にもとづく難易度係数のみを適用する（問題タイプ補正は、問題オブジェクトが
+ * 手元にある戦闘中クイズ側で適用される）。難易度3を基準の1.0とし、
+ * 難易度1で約0.75倍、難易度5で約1.25倍になる。
+ */
+function studyMultiplier(subtopic?: string): number {
+  const base = difficultyFactor(3); // = 1.14
+  return difficultyFactor(difficultyOfSubtopic(subtopic)) / base;
+}
+
+/**
  * 1問ぶんの解答結果を CAT-WARS 経済に反映する。
  * battlemath04 の recordAttempt（全モード共通の解答シンク）から呼ばれる。
+ * @param unitId 学習記録上の単元名（＝サブトピック名）。報酬の重みづけにも使う。
  */
 export function grantStudyReward(isCorrect: boolean, unitId?: string): void {
   const progress = useProgressStore.getState();
@@ -30,13 +44,16 @@ export function grantStudyReward(isCorrect: boolean, unitId?: string): void {
   try { progress.recordAnswer(unitId ?? 'study', isCorrect); } catch { /* noop */ }
   if (!isCorrect) return;
 
+  const m = studyMultiplier(unitId);
+
   // 💠 クレジット（永続・建設/解放の元手）
-  usePlayerStore.getState().addResources(CREDIT_PER_CORRECT);
-  // ⚡ エナジー（当日・バフ/防衛/戦闘の元手）
-  progress.addDailyStars(ENERGY_PER_CORRECT);
+  usePlayerStore.getState().addResources(Math.round(CREDIT_PER_CORRECT * m));
+  // ⚡ エナジー（当日・バフ/防衛/戦闘の元手）。0にならないよう最低1は保証する。
+  progress.addDailyStars(Math.max(1, Math.round(ENERGY_PER_CORRECT * m)));
   // 学習でネコがすこし育つ（スターター系統へ薄く配分。主XP源は戦闘）
   const army = useArmyStore.getState();
-  for (const id of STARTER_IDS) army.addXp(id, STUDY_XP_PER_CORRECT);
+  const xp = Math.max(1, Math.round(STUDY_XP_PER_CORRECT * m));
+  for (const id of STARTER_IDS) army.addXp(id, xp);
 }
 
 /** まとめ報酬（本番テスト完了時など、複数問ぶんをまとめて付与したい場面用） */

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { GameState, Troop, BuildingType, BattleEntity, GRID_SIZE } from '../../types';
 import { BUILDING_STATS } from '../../constants';
 import { Button } from '../ui/Button';
-import { Swords, Trophy, Skull, Zap, Heart, Info, X } from '../ui/Icons';
+import { Swords, Trophy, Skull, Zap, Heart } from '../ui/Icons';
 import { buildTerrainCostMap, findPathWithTerrain, TerrainCostMap } from '../../utils/aiEngine';
 import { SeededRNG } from '../../utils/random';
 import { TerrainLayer } from './TerrainLayer';
@@ -12,6 +12,8 @@ import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore'
 import { useArmyStore } from '../../store/useArmyStore';
 import { CHARACTERS, CHARACTER_BY_ID, STAGE_MULT, getCharacterSprite, spriteFamilyForSubType, stageForLevel } from '../../data/characters';
 import { PinchZoomLayer } from './PinchZoomLayer';
+import { CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ASSIST_LEVELS, EnemyUnitKind } from '../../data/campaign';
+import { collectWallCells, hasLineOfSight, isFlying, pickDefenseTarget } from '../../utils/combatRules';
 
 const IN_BATTLE_BUILD_COSTS: Partial<Record<BuildingType, number>> = {
   [BuildingType.WALL]: 40,
@@ -184,6 +186,12 @@ interface Props {
   playerDeployments?: import('../../types').DeployedBuilding[];
   battleMap?: import('../../types').BattleMap;
   loadout?: import('../../types').BattleLoadout;
+  /** 挑戦中の章（ストーリー表示・報酬に使う） */
+  chapter: CampaignChapter;
+  /** サポートモードを反映ずみの実効難易度 */
+  difficulty: ChapterDifficulty;
+  /** 0=通常 / 1,2=サポートモード（プレイヤーに明示する） */
+  assistLevel?: 0 | 1 | 2;
   /** 出撃前に選んだ出題範囲（戦闘中クイズで使う。空なら「といて⚡」は無効） */
   quizSubtopics?: string[];
   onEndBattle: (win: boolean, loot: { gold: number }) => void;
@@ -194,6 +202,10 @@ export const BattleScene: React.FC<Props> = ({
   defenderBuildings,
   playerDeployments = [],
   battleMap,
+  loadout,
+  chapter,
+  difficulty,
+  assistLevel = 0,
   quizSubtopics = [],
   onEndBattle,
 }) => {
@@ -205,7 +217,13 @@ export const BattleScene: React.FC<Props> = ({
   
   // Interactive Active Spells
   const [selectedSpell, setSelectedSpell] = useState<'HEAL' | 'RAGE' | null>(null);
-  const [spellCounts, setSpellCounts] = useState({ HEAL: 2, RAGE: 2 });
+  // 呪文の所持数は拠点の規模（loadout）で決まる ＝ 拠点づくりが戦闘に効く導線のひとつ
+  const [spellCounts, setSpellCounts] = useState(() => ({
+    HEAL: loadout?.healCharges ?? 2,
+    RAGE: loadout?.rageCharges ?? 2,
+  }));
+  // 開戦前のストーリーブリーフィング（②）
+  const [briefingOpen, setBriefingOpen] = useState(true);
   const [activeSpells, setActiveSpells] = useState<{ id: string; x: number; y: number; type: 'HEAL' | 'RAGE'; endTime: number }[]>([]);
 
   // Projectiles
@@ -216,7 +234,6 @@ export const BattleScene: React.FC<Props> = ({
   // Sensory Juice States
   const [damagedEntities, setDamagedEntities] = useState<Set<string>>(new Set());
   const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
-  const [evidencePanelOpen, setEvidencePanelOpen] = useState(false);
 
   const [battlePaused, setBattlePaused] = useState(false);
   const [quizOpen, setQuizOpen] = useState(false);
@@ -261,6 +278,13 @@ export const BattleScene: React.FC<Props> = ({
   const skeletonsSpawnedRef = useRef(false);
   const lastEnemySpawnRef = useRef(0);
   const enemyWaveRef = useRef(0);
+  const bossSpawnedRef = useRef(false);
+  // 防衛施設の「照準」状態: 施設ID → { targetId, lockedAt }。
+  // 標的を変えるたびに aimTimeMs ぶんの予告時間を挟むための記録（⑥ 反応の余地）。
+  const aimRef = useRef<Record<string, { targetId: string; lockedAt: number }>>({});
+  const wallCellsRef = useRef<Set<string>>(new Set());
+  // 壁を無視して進む飛行系のための、壁を含まない障害物セット
+  const obstaclesNoWallRef = useRef<Set<string>>(new Set());
   const lastHealRef = useRef(0);
   const xpGrantedRef = useRef(false);
   const [levelUps, setLevelUps] = useState<import('../../store/useArmyStore').LevelUpEvent[]>([]);
@@ -284,18 +308,22 @@ export const BattleScene: React.FC<Props> = ({
         }
       }
 
+      // 章ごとの難易度倍率を敵の防衛設備へ適用（⑤ 段階的な難易度設計の実体）
+      const hp = Math.round(stats.hp * difficulty.defenseHpMult);
+      const dmg = Math.round((stats.damage ?? 0) * difficulty.defenseDamageMult);
+
       return {
         id: `def-${i}`,
         type: 'BUILDING',
         subType: b.type,
         x: b.x,
         y: b.y,
-        hp: stats.hp,
-        maxHp: stats.hp,
-        damage: stats.damage || 0,
+        hp,
+        maxHp: hp,
+        damage: dmg,
         team: 'DEFENDER',
         attackRange: stats.range || 0,
-        attackSpeed: 1000,
+        attackSpeed: stats.attackSpeed ?? 1000,
         lastAttack: 0,
         moveSpeed: 0,
         targetPreference: 'ANY',
@@ -328,7 +356,7 @@ export const BattleScene: React.FC<Props> = ({
         damage: stats.damage ?? 0,
         team: 'ATTACKER_BUILDING' as const,
         attackRange: stats.range ?? 0,
-        attackSpeed: 1500,
+        attackSpeed: stats.attackSpeed ?? 1500,
         lastAttack: 0,
         moveSpeed: 0,
         targetPreference: 'ANY' as const,
@@ -343,8 +371,10 @@ export const BattleScene: React.FC<Props> = ({
     }));
     setAvailableTroops(roster);
 
-    // 戦闘開始時ゴールド（バフでブースト）
-    let startGold = 0;
+    // 戦闘開始時ゴールド。章ごとの `startEnergy` を土台にバフを上乗せする。
+    // 旧実装は 0 スタート＋1⚡/秒だったため、最初のネコを出すまで30秒待たされた。
+    // 開始直後に「まず動かせる」ことは初期エンゲージメントの前提条件（⑤）。
+    let startGold = difficulty.startEnergy;
     startGold += buffVal('GOLD_RUSH');
     startGold += buffVal('EXTRA_TROOPS');
     startGold += buffVal('WIZARD_SUPPORT');
@@ -570,7 +600,7 @@ export const BattleScene: React.FC<Props> = ({
       const since = now - lastGoldTickRef.current;
       if (since >= 400) {
         lastGoldTickRef.current = now;
-        let rate = 1;                                    // 城の自動湧き（1ゴールド/秒）
+        let rate = difficulty.energyPerSec;               // 城の自動湧き（章ごとに設定）
         if (hasBuff('GOLD_BOOST')) rate *= 1 + buffVal('GOLD_BOOST') / 100;
         const inc = rate * (since / 1000) + goldKillRef.current;
         goldKillRef.current = 0;
@@ -685,46 +715,70 @@ export const BattleScene: React.FC<Props> = ({
         }
       }
 
-      // --- ENEMY WAVE SPAWNER: periodically sends troops toward player base ---
-      const spawnInterval = enemyWaveRef.current < 3 ? 18000 : 12000;
-      if (battleStarted && battleResult === null && now - lastEnemySpawnRef.current > spawnInterval) {
+      // --- ENEMY WAVE SPAWNER: 章ごとの難易度仕様にしたがって援軍を送る ---
+      // 旧実装は「18秒→12秒・最大3体・2種類固定」のハードコードで、章の概念が無かった。
+      // ここを difficulty 駆動にしたことで、⑤の段階的な難易度設計が実際に効くようになる。
+      if (battleStarted && lastEnemySpawnRef.current === 0) lastEnemySpawnRef.current = now;
+      const spawnInterval = enemyWaveRef.current === 0
+        ? difficulty.firstWaveDelayMs
+        : difficulty.waveIntervalMs;
+      if (battleStarted && battleResult === null && lastEnemySpawnRef.current > 0
+          && now - lastEnemySpawnRef.current > spawnInterval) {
         lastEnemySpawnRef.current = now;
         enemyWaveRef.current += 1;
+        const wave = enemyWaveRef.current;
 
         const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
         if (defenderBldgs.length > 0) {
           const spawnBaseX = Math.max(...defenderBldgs.map(b => b.x));
           const spawnBaseY = Math.round(defenderBldgs.reduce((s, b) => s + b.y, 0) / defenderBldgs.length);
-          const enemyCount = Math.min(3, 1 + Math.floor(enemyWaveRef.current / 2));
 
-          for (let i = 0; i < enemyCount; i++) {
-            const isBarbarian = i % 2 === 0;
+          // ウェーブが進むと体数が waveSize → waveSizeMax まで増える
+          const count = Math.min(
+            difficulty.waveSizeMax,
+            difficulty.waveSize + Math.floor((wave - 1) / 3),
+          );
+
+          const isBossWave = difficulty.bossAtWave === wave && !bossSpawnedRef.current;
+          if (isBossWave) bossSpawnedRef.current = true;
+
+          const kinds: EnemyUnitKind[] = isBossWave
+            ? ['boss']
+            : Array.from({ length: count }, (_, i) =>
+                difficulty.unitPool[(wave + i) % difficulty.unitPool.length]);
+
+          kinds.forEach((kind, i) => {
+            const s = ENEMY_UNIT_STATS[kind];
+            const hp = Math.round(s.hp * difficulty.enemyHpMult);
             nextEntities.push({
               id: `wave-${now}-${i}`,
               type: 'TROOP',
-              subType: isBarbarian ? 'barbarian' : 'archer',
-              x: Math.min(GRID_SIZE - 1, spawnBaseX + 1 + (i % 2) * 0.8),
+              subType: s.subType,
+              x: Math.max(0, Math.min(GRID_SIZE - 1, spawnBaseX + 1 + (i % 2) * 0.8)),
               y: Math.max(0, Math.min(GRID_SIZE - 1, spawnBaseY + (i - 1) * 1.2)),
-              hp: isBarbarian ? 80 : 60,
-              maxHp: isBarbarian ? 80 : 60,
-              damage: isBarbarian ? 12 : 9,
+              hp,
+              maxHp: hp,
+              damage: Math.round(s.damage * difficulty.enemyDamageMult),
               team: 'DEFENDER',
-              attackRange: isBarbarian ? 1.2 : 3.0,
-              attackSpeed: 1200,
+              attackRange: s.attackRange,
+              attackSpeed: s.attackSpeed,
               lastAttack: 0,
-              moveSpeed: isBarbarian ? 2.0 : 2.5,
+              moveSpeed: s.moveSpeed,
               targetPreference: 'ANY',
               path: [],
             });
-          }
+          });
 
-          setTriggerMessage(`⚠️ 敵の援軍 Wave ${enemyWaveRef.current} 出現！自軍の城を守れ！`);
+          setTriggerMessage(isBossWave
+            ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
+            : `⚠️ 敵の援軍 Wave ${wave}（${ENEMY_UNIT_STATS[kinds[0]].label}）が出現！`);
           setTimeout(() => setTriggerMessage(null), 3000);
         }
       }
 
       // Rebuild obstacle lookups
       const currentObstacles = new Set<string>();
+      const noWallObstacles = new Set<string>();
       defenders.forEach(d => {
         if (d.type === 'BUILDING') {
           const stats = BUILDING_STATS[d.subType as BuildingType];
@@ -732,12 +786,17 @@ export const BattleScene: React.FC<Props> = ({
              for(let dy=0; dy<stats.height; dy++) {
                  for(let dx=0; dx<stats.width; dx++) {
                      currentObstacles.add(`${d.x + dx},${d.y + dy}`);
+                     // 飛行系は壁だけを無視する（建物本体は素通りできない）
+                     if (d.subType !== BuildingType.WALL) noWallObstacles.add(`${d.x + dx},${d.y + dy}`);
                  }
              }
           }
         }
       });
       obstaclesRef.current = currentObstacles;
+      obstaclesNoWallRef.current = noWallObstacles;
+      // 壁は砲撃・ビームを遮る（⑥「壁を越えて撃ってくる」への対策）
+      wallCellsRef.current = collectWallCells(nextEntities);
 
       const newDamagedEntities = new Set<string>();
 
@@ -761,11 +820,28 @@ export const BattleScene: React.FC<Props> = ({
            }
 
           if (entity.damage > 0) {
-            const target = hostiles.find(a => {
-               const dist = Math.sqrt(Math.pow(a.x - entity.x, 2) + Math.pow(a.y - entity.y, 2));
-               return dist <= entity.attackRange;
-            });
-            if (target && now - entity.lastAttack > entity.attackSpeed) {
+            // ⑥ 標的選択の修正:
+            //   旧: hostiles.find(距離だけ) → 配列の先頭を撃つため、壁のむこうも撃つし
+            //       タンクで砲撃を引きつける戦術も成立しなかった。
+            //   新: 壁で遮られていない相手だけを候補にし、ヘイト値→距離の順で選ぶ。
+            const target = pickDefenseTarget(entity, hostiles, wallCellsRef.current);
+
+            // 照準時間（aimTimeMs）: 標的をとらえてから初弾までの予告。
+            // 「なぜ削られたのか」を目で追えるようにし、対処の時間をつくる。
+            const aimMs = BUILDING_STATS[entity.subType as BuildingType]?.aimTimeMs ?? 0;
+            let aimed = true;
+            if (target && aimMs > 0) {
+              const rec = aimRef.current[entity.id];
+              if (!rec || rec.targetId !== target.id) {
+                aimRef.current[entity.id] = { targetId: target.id, lockedAt: now };
+                aimed = false;
+              } else {
+                aimed = now - rec.lockedAt >= aimMs;
+              }
+            }
+            if (!target) delete aimRef.current[entity.id];
+
+            if (target && aimed && now - entity.lastAttack > entity.attackSpeed) {
                 // Record dynamic projectiles
                 const isTesla = entity.subType === BuildingType.HIDDEN_TESLA;
                 
@@ -883,7 +959,15 @@ export const BattleScene: React.FC<Props> = ({
               distToTarget = Math.sqrt(Math.pow(targetCenterX - entity.x, 2) + Math.pow(targetCenterY - entity.y, 2));
             }
 
-            if (distToTarget <= entity.attackRange) {
+            // 遠距離ユニットも壁ごしには撃てない（防衛施設と同じルール）。
+            // 近接(射程2未満)と飛行系は、この制限を受けない。
+            const canSeeTarget =
+              entity.attackRange < 2 ||
+              isFlying(entity.subType) ||
+              bestTarget!.subType === BuildingType.WALL ||
+              hasLineOfSight(entity.x + 0.5, entity.y + 0.5, bestTarget!.x + 0.5, bestTarget!.y + 0.5, wallCellsRef.current);
+
+            if (distToTarget <= entity.attackRange && canSeeTarget) {
                 if (now - entity.lastAttack > currentAttackSpeed) {
                     const prevHp = bestTarget.hp;
                     bestTarget.hp -= currentDamage;
@@ -942,13 +1026,17 @@ export const BattleScene: React.FC<Props> = ({
             else {
                 // Move towards nearest coordinate
                 if (!entity.path || entity.path.length === 0) {
+                     // 飛行系は壁を無視して直進できる（その代わり壁のかげにも隠れられない）
+                     const obstacles = isFlying(entity.subType)
+                       ? obstaclesNoWallRef.current
+                       : obstaclesRef.current;
                      const path = findPathWithTerrain(
                          {x: entity.x, y: entity.y},
                          {x: bestTarget.x, y: bestTarget.y},
-                         obstaclesRef.current,
+                         obstacles,
                          terrainCostsRef.current
                      );
-                     
+
                      if (path && path.length > 0) {
                          entity.path = path;
                      } else {
@@ -1027,7 +1115,7 @@ export const BattleScene: React.FC<Props> = ({
     });
 
     gameLoopRef.current = requestAnimationFrame(updateBattle);
-  }, [battleStarted, availableTroops, battleResult, activeSpells, battlePaused]);
+  }, [battleStarted, availableTroops, battleResult, activeSpells, battlePaused, difficulty, chapter]);
 
   useEffect(() => {
     if (battleResult) {
@@ -1136,9 +1224,18 @@ export const BattleScene: React.FC<Props> = ({
 
        {/* Top Bar */}
        <div className="h-16 bg-black/75 flex justify-between items-center px-4 text-white z-50 relative border-b border-white/5">
-          <div className="font-bold text-sm tracking-tight flex items-center gap-2">
-            <Swords className="text-red-500 animate-pulse" size={18} /> 
-            <span className="text-red-400 font-extrabold text-base">バトル襲撃中</span>
+          <div className="font-bold text-sm tracking-tight flex items-center gap-2 min-w-0">
+            <Swords className="text-red-500 animate-pulse flex-shrink-0" size={18} />
+            <span className="text-red-400 font-extrabold text-base whitespace-nowrap">第{chapter.no}章</span>
+            <span className="text-white/60 text-xs truncate hidden sm:inline" style={{ fontFamily: '"M PLUS Rounded 1c", sans-serif' }}>
+              {chapter.title}
+            </span>
+            {assistLevel > 0 && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap flex-shrink-0"
+                style={{ background: 'rgba(163,230,53,0.12)', borderColor: 'rgba(163,230,53,0.45)', color: '#a3e635' }}>
+                🛟 {ASSIST_LEVELS[assistLevel].label}
+              </span>
+            )}
             {selectedSpell && (
               <span className="text-xs bg-purple-600/50 text-purple-200 px-2 py-0.5 rounded-full select-none animate-bounce border border-purple-400/30">
                 🔮 呪文投下ポインター
@@ -1161,13 +1258,6 @@ export const BattleScene: React.FC<Props> = ({
               <span className="text-base">⚡</span>
               <span className="text-[#facc15] font-bold text-sm">{Math.floor(gold)}</span>
             </div>
-            <button
-              onClick={() => setEvidencePanelOpen(true)}
-              className="bg-slate-800 hover:bg-slate-700 text-white font-extrabold px-3 py-1 text-xs rounded-lg shadow border border-slate-700 flex items-center gap-1.5 transition-all"
-            >
-              <Info size={13} className="text-yellow-400" />
-              <span>戦術エビデンス解説</span>
-            </button>
             <Button variant="secondary" size="xs" onClick={() => onEndBattle(false, { gold: 0 })}>
               全軍撤退（降伏）
             </Button>
@@ -1563,14 +1653,18 @@ export const BattleScene: React.FC<Props> = ({
        {battleResult && (() => {
          const lootMult = hasBuff('DOUBLE_LOOT') ? 1 + buffVal('DOUBLE_LOOT') / 100 : 1;
          const win = battleResult === 'WIN';
-         const loot = win ? { gold: 500 * lootMult } : { gold: 0 };
+         // 戦利品は章ごとに設定（難しい章ほど多い）
+         const loot = win ? { gold: Math.round(chapter.rewardCredits * lootMult) } : { gold: 0 };
          return (
          <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300 p-4 overflow-y-auto">
             {win ? (
                <div className="text-center p-6 bg-slate-900/70 border border-yellow-500/30 rounded-2xl max-w-sm w-full max-h-[92dvh] overflow-y-auto backdrop-blur-md shadow-2xl">
                  <Trophy className="w-16 h-16 text-yellow-400 mx-auto mb-3 animate-bounce" />
-                 <h2 className="text-3xl font-extrabold text-yellow-400 mb-1">完全制覇 勝利！</h2>
-                 <p className="text-sm text-gray-300 mb-4 leading-relaxed">敵基地を全壊させ、戦利品を持ち帰ることに成功しました！</p>
+                 <div className="text-[10px] tracking-[0.25em] text-yellow-400/70 mb-1" style={{ fontFamily: 'Orbitron, monospace' }}>
+                   CHAPTER {chapter.no} CLEAR
+                 </div>
+                 <h2 className="text-2xl font-extrabold text-yellow-400 mb-2 leading-tight">{chapter.title}</h2>
+                 <p className="text-sm text-gray-200 mb-4 leading-relaxed">{chapter.victoryLine}</p>
                  <LevelUpSummary events={levelUps} />
                  <Button className="w-full mt-2" size="lg" onClick={() => onEndBattle(true, loot)}>
                    戦利品を獲得して帰還 (💠{loot.gold} クレジット){hasBuff('DOUBLE_LOOT') && ' ×2!'}
@@ -1579,8 +1673,15 @@ export const BattleScene: React.FC<Props> = ({
             ) : (
                <div className="text-center p-6 bg-slate-900/70 border border-red-500/30 rounded-2xl max-w-sm w-full max-h-[92dvh] overflow-y-auto backdrop-blur-md shadow-2xl">
                  <Skull className="w-16 h-16 text-red-500 mx-auto mb-3" />
-                 <h2 className="text-3xl font-extrabold text-red-500 mb-1">全滅... 敗北</h2>
-                 <p className="text-sm text-gray-300 mb-4 leading-relaxed">全ての兵士が戦闘不能になりました。でも経験値は手に入ったよ！</p>
+                 <h2 className="text-2xl font-extrabold text-red-500 mb-2">たいきゃく...</h2>
+                 <p className="text-sm text-gray-200 mb-2 leading-relaxed">{chapter.defeatLine}</p>
+                 <p className="text-[11px] text-cyan-300/80 mb-3 leading-relaxed">
+                   💡 {chapter.hint}
+                 </p>
+                 {/* 連敗時は次回サポートが入ることを先に伝える（隠れた調整はしない） */}
+                 <div className="text-[11px] text-[#a3e635] mb-3 leading-relaxed">
+                   まけても部隊の経験値は手に入るよ。何回かまけると「サポートモード」で やさしくなるので、あきらめずにもう一回！
+                 </div>
                  <LevelUpSummary events={levelUps} />
                  <Button className="w-full mt-2" size="lg" variant="secondary" onClick={() => onEndBattle(false, { gold: 0 })}>
                    村へ撤退する
@@ -1782,91 +1883,64 @@ export const BattleScene: React.FC<Props> = ({
          </div>
        </div>
 
-       {/* Authoritative Game Design Evidence & Academic Review Modal */}
-       {evidencePanelOpen && (
-         <div className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center p-4 animate-in fade-in">
-           <div className="bg-slate-900 text-slate-100 rounded-2xl w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl border border-slate-800">
-             
-             {/* Header */}
-             <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
-               <h3 className="text-md font-extrabold text-teal-400 flex items-center gap-1.5 leading-none">
-                 <Info size={18} />
-                 <span>RTSゲームデザイン学術エビデンス（専門家レビュー）</span>
-               </h3>
-               <button 
-                 onClick={() => setEvidencePanelOpen(false)}
-                 className="p-1.5 hover:bg-slate-800 rounded-lg text-gray-450 hover:text-white transition-all outline-none"
-               >
-                 <X size={16} />
-               </button>
-             </div>
-
-             {/* Contents */}
-             <div className="p-6 overflow-y-auto space-y-5 text-xs text-gray-300 leading-relaxed">
-               
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">📖 エビデンスレベル1: Adams & Rollingsの「ユニット相性直交性の設計概念」</h4>
-                 <p className="text-[11px]">
-                   ゲームデザイン界のバイブルである *Adams & Rollings on Game Design*（RTSシステム幾何学論）によると、ユニット相性は「完全直交（異なる優先ターゲット）」が最もプレイヤーの能動的体験を増やします。
-                 </p>
-                 <ul className="list-disc pl-4 mt-1.5 space-y-1 text-[11px]">
-                   <li><strong>ジャイアント (タンク役)</strong>: HPが高く、防衛施設のみを優先。これが敵大砲のヘイトを引き受け、ヘイトターゲットを固定化します。</li>
-                   <li><strong>アーチャー＆バーバリアン (Dps役)</strong>: HPが低く、無差別攻撃。大砲がジャイアントに向いている隙に、安全に周囲を全壊させます。</li>
-                 </ul>
-                 <p className="text-[11px] text-gray-400 mt-1 font-semibold">
-                   ※本機能における例題: 「大砲1基を無傷で突破する最適ステップ」＝「最初に射程内に宿敵のジャイアントを配置（迎撃砲撃をジャイアントへ向けさせロック）→ 1秒後に射程外/別方向からバーバリアンを4人一括デプロイして速攻破壊」。
-                 </p>
-               </section>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">⚡ エビデンスレベル2: Cognitive UX 認知における「感覚フィードバックの肯定ループ」</h4>
-                 <p className="text-[11px]">
-                   戦闘画面を体験する上において、「防衛設備が一方的にダメージを与える瞬間」は脳の「認知不協和（なぜダメージを負ったのか推察しにくい）」を発生させます。
-                   本アップデートでは、**「大砲からの重力弾丸（Cannonball）」**及び**「テスラからのリアルタイム電撃ビーム（Tesla Beam）」**を40ms刻みでベクトル追従補正アニメーション化しました。
-                   これにより、敵の攻撃経路・被害原因がプレイヤーの視覚野にて即座に理解でき、学習効果およびリトライ継続率（D1 retention）が統計的に上昇することが様々なUX評価で確認されています。
-                 </p>
-               </section>
-
-               <section className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-                 <h4 className="text-yellow-400 font-extrabold mb-1">🔮 エビデンスレベル3: Björk & Holopainen の「Emergent Tactical Agency（創発的介入呪文）」</h4>
-                 <p className="text-[11px]">
-                   Björk & Holopainen による *Patterns in Game Design* では、「観戦フェーズに落ちた際のプレイヤーの認知ストレス解放」には、制限された「アクティブ魔法/コマンド」の投入が有効であると述べられています。
-                 </p>
-                 <ul className="list-disc pl-4 mt-1.5 space-y-1 text-[11px]">
-                   <li><strong>癒やし（Heal Spell）</strong>: ピンチの戦士達の生存時間を引き延ばします。</li>
-                   <li><strong>激怒（Rage Spell）</strong>: 攻撃速度を2倍化し、頑強な壁を一瞬で粉砕します。</li>
-                 </ul>
-               </section>
-
-               <div className="bg-teal-950/50 p-3 rounded-lg border border-teal-500/20 text-[11px] text-teal-300">
-                 <strong>💡 専門家としての最適解結論:</strong><br />
-                 ただ並べて眺めるだけではなく、戦闘開始直後に「ジャイアントでおとり役 → 大砲の側で激怒（Rage）魔法を投下し、大砲を速攻で撤去 → 後ろにバーバリアン配置」が、ゲーム理論における最も数学的効率の高い最適クリア解となります。
-               </div>
-
-             </div>
-
-             {/* Footer */}
-             <div className="p-4 border-t border-slate-800 bg-slate-950 text-center">
-               <button 
-                 onClick={() => setEvidencePanelOpen(false)}
-                 className="bg-teal-600 hover:bg-teal-500 text-white font-bold py-1.5 px-6 text-xs rounded-lg shadow-md transition-all active:scale-95 border-b border-teal-800"
-               >
-                 解説を閉じて戦闘へ戻る
-               </button>
-             </div>
-
-           </div>
-         </div>
-       )}
-
-       {/* 戦闘中クイズ（出撃前に選んだ範囲からランダム出題 → ⚡エナジー獲得） */}
+       {/* 戦闘中クイズ（出撃前に選んだ範囲からランダム出題 → ⚡エナジー獲得）
+           ③ 報酬は問題の難易度・所要工程に応じて傾斜配分される（InBattleQuiz 側で算出）。 */}
        {quizOpen && (
          <InBattleQuiz
            subtopics={quizSubtopics}
-           reward={40}
+           baseReward={34}
            onReward={(en) => setGold(g => Math.min(9999, g + en))}
            onClose={() => { setQuizOpen(false); setBattlePaused(false); }}
          />
+       )}
+
+       {/* 開戦ブリーフィング（②: 戦いのタイトル・敵の背景・作戦の一言） */}
+       {briefingOpen && (
+         <div className="absolute inset-0 z-[130] flex items-center justify-center p-4"
+           style={{ background: 'rgba(3,6,16,0.93)', backdropFilter: 'blur(6px)' }}>
+           <div className="w-full max-w-sm rounded-2xl border p-5 max-h-[90dvh] overflow-y-auto"
+             style={{
+               borderColor: 'rgba(239,68,68,0.4)',
+               background: 'linear-gradient(160deg, rgba(37,99,235,0.16), rgba(239,68,68,0.14)), rgba(6,10,24,0.9)',
+               fontFamily: '"M PLUS Rounded 1c", sans-serif',
+             }}>
+             <div className="text-[10px] tracking-[0.3em] text-[#38bdf8]/80" style={{ fontFamily: 'Orbitron, monospace' }}>
+               CHAPTER {chapter.no}
+             </div>
+             <h2 className="text-white font-black text-xl mt-1 mb-3 leading-tight">{chapter.title}</h2>
+
+             <div className="flex items-start gap-3 p-3 rounded-xl mb-3"
+               style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.28)' }}>
+               <span className="text-2xl leading-none">😼</span>
+               <div className="min-w-0">
+                 <div className="text-[#f87171] font-bold text-sm">{chapter.enemyName}</div>
+                 <div className="text-white/45 text-[10px] mb-1">{chapter.enemyTitle}</div>
+                 <p className="text-white/75 text-[11px] leading-relaxed">{chapter.background}</p>
+               </div>
+             </div>
+
+             <p className="text-white/85 text-xs leading-relaxed mb-2">▸ {chapter.briefing}</p>
+             <p className="text-[#facc15]/90 text-[11px] leading-relaxed mb-4">💡 {chapter.hint}</p>
+
+             {assistLevel > 0 && (
+               <div className="p-2.5 rounded-xl mb-4 text-[11px] leading-relaxed"
+                 style={{ background: 'rgba(163,230,53,0.10)', border: '1px solid rgba(163,230,53,0.35)', color: '#a3e635' }}>
+                 🛟 <strong>{ASSIST_LEVELS[assistLevel].label}</strong>：{ASSIST_LEVELS[assistLevel].description}
+               </div>
+             )}
+
+             <button
+               onClick={() => { sfx.select(); setBriefingOpen(false); }}
+               className="w-full py-3.5 rounded-xl font-bold text-base transition-all active:scale-95"
+               style={{
+                 fontFamily: 'Orbitron, monospace',
+                 background: 'rgba(239,68,68,0.2)', border: '2px solid #ef4444', color: '#f87171',
+                 boxShadow: '0 0 14px rgba(239,68,68,0.5)',
+               }}>
+               ⚔️ 作戦かいし！
+             </button>
+           </div>
+         </div>
        )}
 
     </div>
