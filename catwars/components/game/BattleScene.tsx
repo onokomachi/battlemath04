@@ -12,7 +12,11 @@ import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore'
 import { useArmyStore } from '../../store/useArmyStore';
 import { CHARACTERS, CHARACTER_BY_ID, STAGE_MULT, getCharacterSprite, spriteFamilyForSubType, stageForLevel } from '../../data/characters';
 import { PinchZoomLayer } from './PinchZoomLayer';
-import { CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ENEMY_UNIT_COST, ASSIST_LEVELS, EnemyUnitKind, pickWeightedEnemyUnit } from '../../data/campaign';
+import {
+  CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ENEMY_UNIT_COST, ASSIST_LEVELS,
+  EnemyUnitKind, pickWeightedEnemyUnit, enemySpawnRate,
+  ENEMY_SPAWN_BUILDINGS, ENEMY_PRODUCTION_RATE, BARRACKS_ONLY_UNITS,
+} from '../../data/campaign';
 import { collectWallCells, hasLineOfSight, isFlying, pickDefenseTarget } from '../../utils/combatRules';
 import {
   ALIEN_STATS, LAVA_DPS, MeteorState, collectLavaCells, isOnLava,
@@ -286,6 +290,8 @@ export const BattleScene: React.FC<Props> = ({
   const pendingEnemyUnitRef = useRef<EnemyUnitKind | null>(null);
   const enemySpawnCountRef = useRef(0);
   const bossSpawnedRef = useRef(false);
+  /** 開幕時に敵拠点が存在したか（勝利条件の判定に使う） */
+  const hadEnemyBuildingsRef = useRef(false);
   // ── ステージギミックの状態 ──
   const lavaCellsRef = useRef<Set<string>>(new Set());
   const lastLavaTickRef = useRef(0);
@@ -346,6 +352,8 @@ export const BattleScene: React.FC<Props> = ({
         isHidden: b.type === BuildingType.HIDDEN_TESLA
       };
     });
+
+    hadEnemyBuildingsRef.current = defenseEntities.length > 0;
 
     // 地形コストマップを構築
     if (battleMap) {
@@ -664,6 +672,17 @@ export const BattleScene: React.FC<Props> = ({
         }
         if (e.hp <= 0 && e.type === 'BUILDING') {
           sfx.explosion();
+          // 敵の生産施設をこわしたら、その効果をはっきり伝える。
+          // 「こわす → 増援がへる」という因果を子どもが自分で発見できるように、
+          // 何がどれだけ弱くなったのかを具体的な言葉で出す（②の学習フック）。
+          if (e.team === 'DEFENDER' && ENEMY_PRODUCTION_RATE[e.subType as BuildingType] != null) {
+            const st = BUILDING_STATS[e.subType as BuildingType];
+            const isSpawnPoint = ENEMY_SPAWN_BUILDINGS.includes(e.subType as BuildingType);
+            setTriggerMessage(isSpawnPoint
+              ? `🏭 敵の${st?.name}を破壊！ この場所から増援が出てこなくなった！`
+              : `⛏️ 敵の${st?.name}を破壊！ 敵の増援が おそくなった！`);
+            setTimeout(() => setTriggerMessage(null), 2600);
+          }
         }
       });
       const nextEntities = mapped.filter(e => e.hp > 0);
@@ -692,7 +711,12 @@ export const BattleScene: React.FC<Props> = ({
       const enemyTownHallExists = defenders.some(
         e => e.type === 'BUILDING' && e.subType === BuildingType.TOWN_HALL && e.hp > 0
       );
-      if (battleStarted && !enemyTownHallExists && defenders.filter(e => e.type === 'BUILDING').length > 0) {
+      // 「このステージに敵拠点が存在するか」の判定には、いま生き残っている数ではなく
+      // 開幕時に敵拠点があったかどうかを使う。生存数で見ていると、コアを最後に
+      // こわしたとき（＝全施設が同時に0になる瞬間）に勝利条件が成立せず、
+      // 攻めきったのに勝てないという状態になりうる。敵の生産施設を増やしたことで
+      // 「先に周りをつぶしてからコア」という順序が現実的になったため、ここで直す。
+      if (battleStarted && !enemyTownHallExists && hadEnemyBuildingsRef.current) {
         sfx.battleWin();
         setBattleResult('WIN');
       }
@@ -761,42 +785,91 @@ export const BattleScene: React.FC<Props> = ({
       // --- ENEMY SPAWNER: 敵の増援ポイント経済（①） ---
       // 旧実装は「ウェーブ間隔16〜36秒・毎回1〜4体」のバッチ湧きで、間隔が
       // 長すぎて手ごたえがなかった。プレイヤーが「問題を解いて⚡をため、
-      // ネコを1体出す」のと同じテンポ感になるよう、敵も difficulty.enemySpawnRatePerSec
-      // で決まる速さでポイントをため、たまるたびに1体ずつ出す経済に統一した。
-      // 出現位置も、旧実装は自陣建物群の平均点1か所だけだったため「いつも同じ
-      // 湧き穴から出てくる」ように見えていた。敵陣の右がわの通行可能なマスから
-      // 毎回ランダムに選ぶことで、複数の場所から攻めてくるように見せている。
+      // ネコを1体出す」のと同じテンポ感になるよう、敵も「ポイントがたまったら
+      // 1体出す」経済に統一した。
+      //
+      // さらに「敵は金山のぶんだけで戦力を出しているように見える」という指摘を
+      // 受けて、敵もキャンプ・兵舎を建て、そこを湧き口にするようにした。
+      //   ・増援の速さ = コアの基本値 + 生きているキャンプ/兵舎/金山の寄与
+      //   ・出現位置   = 生きているキャンプ・兵舎のとなり（複数箇所からになる）
+      //   ・兵舎が全滅すると重量級（重装ロボ・飛行ドローン）を出せなくなる
+      // つまり「先に生産施設をつぶす」という戦略が、増援の量・質・位置の
+      // すべてに効くようになる（②の「戦略の工夫で勝てる構成」の実体）。
       if (battleStarted && battleResult === null) {
         if (lastEnemySpawnRef.current === 0) lastEnemySpawnRef.current = now;
-        if (!pendingEnemyUnitRef.current) {
-          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(difficulty.unitPool, rngRef.current);
+
+        const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
+        const spawnBldgs = defenderBldgs.filter(b =>
+          ENEMY_SPAWN_BUILDINGS.includes(b.subType as BuildingType));
+        const barracksAlive = defenderBldgs.some(b => b.subType === BuildingType.BARRACKS);
+        const spawnRate = enemySpawnRate(difficulty, defenderBldgs.map(b => b.subType as string));
+
+        // 兵舎が全滅したら重量級は出せない（軽量級だけの pool にフォールバック）
+        const pool = barracksAlive
+          ? difficulty.unitPool
+          : difficulty.unitPool.filter(k => !BARRACKS_ONLY_UNITS.includes(k));
+        const effectivePool = pool.length > 0 ? pool : (['grunt'] as EnemyUnitKind[]);
+
+        if (!pendingEnemyUnitRef.current || !effectivePool.includes(pendingEnemyUnitRef.current)) {
+          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(effectivePool, rngRef.current);
         }
         const pendingKind = pendingEnemyUnitRef.current;
         const isFirstSpawn = enemySpawnCountRef.current === 0;
         const intervalMs = isFirstSpawn
           ? difficulty.firstSpawnDelayMs
-          : Math.max(1500, (ENEMY_UNIT_COST[pendingKind] / difficulty.enemySpawnRatePerSec) * 1000);
+          : Math.max(1500, (ENEMY_UNIT_COST[pendingKind] / Math.max(0.1, spawnRate)) * 1000);
 
         if (now - lastEnemySpawnRef.current > intervalMs) {
           lastEnemySpawnRef.current = now;
           enemySpawnCountRef.current += 1;
           const spawnCount = enemySpawnCountRef.current;
 
-          const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
           if (defenderBldgs.length > 0) {
             const isBossSpawn = difficulty.bossAtSpawnCount === spawnCount && !bossSpawnedRef.current;
             if (isBossSpawn) bossSpawnedRef.current = true;
             const kind: EnemyUnitKind = isBossSpawn ? 'boss' : pendingKind;
 
-            // 敵陣の右がわの通行可能なマスをすべて拾い、ランダムに1つ選ぶ
-            const spawnX = Math.min(GRID_W - 1, Math.max(...defenderBldgs.map(b => b.x)) + 1);
-            const candidateYs: number[] = [];
-            for (let y = 0; y < GRID_H; y++) {
-              if (!obstaclesRef.current.has(`${spawnX},${y}`)) candidateYs.push(y);
+            // 湧き口: 生きているキャンプ・兵舎のとなり。すべてこわされていたら
+            // 従来どおり敵陣のいちばん奥の列から出す（＝増援は止まらないが遅くなる）。
+            const isBlocked = (x: number, y: number) =>
+              x < 0 || x >= GRID_W || y < 0 || y >= GRID_H ||
+              obstaclesRef.current.has(`${x},${y}`) ||
+              terrainCostsRef.current.get(`${x},${y}`) === Infinity;
+
+            let spawnX: number;
+            let spawnY: number;
+            let fromLabel = '';
+            const src = spawnBldgs.length > 0
+              ? spawnBldgs[Math.floor(rngRef.current.next() * spawnBldgs.length)]
+              : null;
+
+            if (src) {
+              const st = BUILDING_STATS[src.subType as BuildingType];
+              fromLabel = st?.name ?? '';
+              // 施設の周囲を、プレイヤー側(左)を優先しながら探して空きマスに出す
+              const perimeter: { x: number; y: number }[] = [];
+              for (let dy = -1; dy <= (st?.height ?? 1); dy++) {
+                perimeter.push({ x: src.x - 1, y: src.y + dy });
+                perimeter.push({ x: src.x + (st?.width ?? 1), y: src.y + dy });
+              }
+              for (let dx = 0; dx < (st?.width ?? 1); dx++) {
+                perimeter.push({ x: src.x + dx, y: src.y - 1 });
+                perimeter.push({ x: src.x + dx, y: src.y + (st?.height ?? 1) });
+              }
+              const free = perimeter.filter(p => !isBlocked(p.x, p.y));
+              const pick = free.length > 0
+                ? free[Math.floor(rngRef.current.next() * free.length)]
+                : { x: src.x, y: src.y };
+              spawnX = pick.x;
+              spawnY = pick.y;
+            } else {
+              spawnX = Math.min(GRID_W - 1, Math.max(...defenderBldgs.map(b => b.x)) + 1);
+              const candidateYs: number[] = [];
+              for (let y = 0; y < GRID_H; y++) if (!isBlocked(spawnX, y)) candidateYs.push(y);
+              spawnY = candidateYs.length > 0
+                ? candidateYs[Math.floor(rngRef.current.next() * candidateYs.length)]
+                : Math.round(GRID_H / 2);
             }
-            const spawnY = candidateYs.length > 0
-              ? candidateYs[Math.floor(rngRef.current.next() * candidateYs.length)]
-              : Math.round(GRID_H / 2);
 
             const s = ENEMY_UNIT_STATS[kind];
             const hp = Math.round(s.hp * difficulty.enemyHpMult);
@@ -820,12 +893,14 @@ export const BattleScene: React.FC<Props> = ({
 
             setTriggerMessage(isBossSpawn
               ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
-              : `⚠️ 敵の増援（${s.label}）が出現！`);
+              : fromLabel
+                ? `⚠️ 敵の${fromLabel}から 増援（${s.label}）が出てきた！`
+                : `⚠️ 敵の増援（${s.label}）が出現！`);
             setTimeout(() => setTriggerMessage(null), 2200);
           }
 
           // 次の1体を先ぎめしておく（そのコストが次回の待ち時間を決める）
-          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(difficulty.unitPool, rngRef.current);
+          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(effectivePool, rngRef.current);
         }
       }
 
