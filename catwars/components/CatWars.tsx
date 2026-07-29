@@ -23,7 +23,8 @@ const fontMono = { fontFamily: 'Orbitron, monospace' };
 
 // 出撃導線: 範囲えらび → ステージえらび → 陣地づくり → 戦闘
 // 陣地はステージごとに組む（ゾーンの広さが章によって変わるため）。
-type View = 'home' | 'base' | 'army' | 'range' | 'stage' | 'prep' | 'battle' | 'buffs' | 'mercs';
+// 陣地づくりは常にこの導線の中でのみ行う（ハブから単独で開く入口は廃止・一本化ずみ）。
+type View = 'home' | 'army' | 'range' | 'stage' | 'prep' | 'battle' | 'buffs' | 'mercs';
 
 interface Props {
   onExit: () => void;
@@ -70,15 +71,6 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   };
 
   // ── サブ画面 ───────────────────────────────
-  // ハブからの「陣地づくり」は、つぎに挑む章の陣地を編集する
-  if (view === 'base') {
-    return (
-      <BaseBuilder
-        chapter={CHAPTER_BY_ID[campaign.nextChapterId()] ?? CAMPAIGN[0]}
-        onBack={() => setView('home')}
-      />
-    );
-  }
   if (view === 'army') return <ArmyRosterScreen onBack={() => setView('home')} />;
 
   if (view === 'range') {
@@ -202,25 +194,22 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
       <div className="grid grid-cols-2 gap-3 px-4 pt-4">
         <HubButton icon="⚔️" label="出撃！" sub={allCleared ? '全章クリア！ 好きな章に再挑戦' : `第${nextChapter.no}章「${nextChapter.title}」へ`} color="#ef4444"
           onClick={() => { resetBattleSession(); setView('range'); }} big />
-        <HubButton icon="🏰" label="陣地づくり" sub="⚡で施設を建てる（明日リセット）" color="#38bdf8"
-          onClick={() => setView('base')} />
         <HubButton icon="🐱" label="ネコ図鑑" sub="部隊のレベル・進化" color="#a3e635"
           onClick={() => setView('army')} />
         <HubButton icon="✨" label="出撃バフ" sub="⚡エナジーで今日の戦力UP" color="#facc15"
           onClick={() => setView('buffs')} />
       </div>
 
-      {/* Base mini-preview */}
+      {/* Base mini-preview（陣地の編集は出撃フローの中でのみ行う。ここは今日のもちものの確認のみ） */}
       <div className="px-4 pt-4">
         <div className="rounded-2xl border border-white/10 p-3" style={{ background: 'rgba(6,10,24,0.55)' }}>
           <div className="flex items-center justify-between mb-2">
             <span className="text-white/70 text-xs font-bold" style={fontMono}>きょうの もちもの</span>
-            <button onClick={() => setView('base')} className="text-[#38bdf8] text-[11px]">陣地づくり ›</button>
           </div>
           <div className="flex flex-wrap gap-2">
             {Object.entries(built).filter(([, n]) => (n ?? 0) > 0).length === 0 && (
               <span className="text-white/40 text-xs">
-                まだ施設がありません。⚡エナジーで建てよう（明日リセット）
+                まだ施設がありません。「出撃！」から陣地づくりで⚡エナジーで建てよう（明日リセット）
               </span>
             )}
             {Object.entries(built).filter(([, n]) => (n ?? 0) > 0).map(([type, n]) => (
