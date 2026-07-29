@@ -7,9 +7,11 @@ import { TerrainLayer } from './TerrainLayer';
 // ── 決定論シミュレーション（catwars/sim/）──
 // ゲーム状態はすべてこちらが持つ。このコンポーネントは描画と入力だけを担当する。
 import { SimRunner, LocalCommandProvider } from '../../sim/runner';
-import { canDeployAt, isBlockedCell } from '../../sim/simulate';
+import { canDeployAt, isBlockedCell, SimInit } from '../../sim/simulate';
 import { buildSimConfig } from '../../sim/setup';
-import { SimCommand, SimEvent, TICK_MS } from '../../sim/types';
+import { stateChecksum } from '../../sim/checksum';
+import { SimCommand, SimEvent, SimConfig, PlayerId, TICK_MS } from '../../sim/types';
+import type { LockstepSession, LockstepStatus } from '../../net/lockstep';
 import { InBattleQuiz } from './InBattleQuiz';
 import { sfx } from '../../utils/audioEngine';
 import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore';
@@ -206,6 +208,19 @@ interface Props {
   assistLevel?: 0 | 1 | 2;
   /** 出撃前に選んだ出題範囲（戦闘中クイズで使う。空なら「といて⚡」は無効） */
   quizSubtopics?: string[];
+  /**
+   * PvP対戦の接続。省略すると単体プレイ（PvE）になる。
+   * 渡された場合、コマンドは LockstepSession 経由で相手にも送られ、
+   * 両者のコマンドが揃うまでシミュレーションは進まない。
+   */
+  pvp?: {
+    session: LockstepSession;
+    localPlayer: PlayerId;
+    /** 両者で完全に同一でなければならない（マッチ開始時に確定させる） */
+    config: SimConfig;
+    init: SimInit;
+    opponentName: string;
+  };
   onEndBattle: (win: boolean, loot: { gold: number }) => void;
 }
 
@@ -219,8 +234,12 @@ export const BattleScene: React.FC<Props> = ({
   difficulty,
   assistLevel = 0,
   quizSubtopics = [],
+  pvp,
   onEndBattle,
 }) => {
+  /** 自分がどちらのプレイヤーか。PvEでは常に P1 */
+  const localPlayer: PlayerId = pvp?.localPlayer ?? 'P1';
+  const isPvp = !!pvp;
   // ══════════════════════════════════════════════════════════════════════
   // このコンポーネントは「決定論シミュレーション（catwars/sim/）を駆動して
   // 描画するだけの殻」になっている。ゲーム状態は一切 React state に持たない。
@@ -275,6 +294,11 @@ export const BattleScene: React.FC<Props> = ({
   // （相手の端末には無い情報なので、参照した瞬間にデシンクする）。
   const runnerRef = useRef<SimRunner | null>(null);
   const providerRef = useRef(new LocalCommandProvider());
+  if (runnerRef.current === null && pvp) {
+    // PvP: 設定と初期配置はマッチ開始時にサーバー経由で確定ずみのものを使う。
+    // ここでローカルのストアを読んではいけない（相手と食い違う）。
+    runnerRef.current = new SimRunner(pvp.config, pvp.init);
+  }
   if (runnerRef.current === null) {
     const values: Record<string, number> = {};
     for (const b of activeBuffs) {
@@ -307,13 +331,14 @@ export const BattleScene: React.FC<Props> = ({
   const simState = runner.state;
 
   // ── JSX が読む値（すべてシミュレーション状態からの派生）──
+  const me = simState.players[localPlayer];
   const entities = simState.entities;
-  const gold = simState.players.P1.energy;
+  const gold = me.energy;
   const battleResult: 'WIN' | 'LOSE' | null =
-    simState.result === null ? null : simState.result === 'P1' ? 'WIN' : 'LOSE';
+    simState.result === null ? null : simState.result === localPlayer ? 'WIN' : 'LOSE';
   const battleStarted = simState.started;
-  const spellCounts = simState.players.P1.spells;
-  const tempRank = simState.players.P1.tempRank;
+  const spellCounts = me.spells;
+  const tempRank = me.tempRank;
 
   // 呪文・流星は「残り tick」を実時間に直して描画に渡す（見た目だけの変換）
   const nowMs = Date.now();
@@ -321,13 +346,14 @@ export const BattleScene: React.FC<Props> = ({
     id: s.id, x: s.x, y: s.y, type: s.type,
     endTime: nowMs + (s.endTick - simState.tick) * TICK_MS,
   }));
+  const meteorZones = runner.cfg.battleMap?.meteorZones ?? [];
   const meteors = simState.meteors.map(m => ({
     id: m.id,
-    zone: battleMap!.meteorZones![m.zoneIndex],
+    zone: meteorZones[m.zoneIndex],
     warnedAt: nowMs + (m.warnedTick - simState.tick) * TICK_MS,
     impactAt: nowMs + (m.impactTick - simState.tick) * TICK_MS,
     resolved: m.resolved,
-  }));
+  })).filter(m => m.zone);
 
   const availableTroops: Troop[] = useMemo(() => CHARACTERS.map(c => ({
     id: c.id, name: c.forms[0].name, count: 1,
@@ -386,8 +412,13 @@ export const BattleScene: React.FC<Props> = ({
   }, []);
 
   // ── メインループ（固定タイムステップ）──
+  const pvpRef = useRef(pvp);
+  pvpRef.current = pvp;
+  const netStatusRef = useRef<LockstepStatus>({ kind: 'RUNNING' });
   const pausedRef = useRef(false);
-  pausedRef.current = battlePaused || briefingOpen;
+  // PvPでは自分だけ止めるわけにいかない（相手を待たせてしまう）ので、
+  // ブリーフィング中でもシミュレーションは進める
+  pausedRef.current = isPvp ? false : (battlePaused || briefingOpen);
   const rafRef = useRef<number | undefined>(undefined);
   const lastRealRef = useRef(0);
 
@@ -401,8 +432,26 @@ export const BattleScene: React.FC<Props> = ({
 
       const r = runnerRef.current!;
       if (!pausedRef.current && r.state.result === null) {
-        const res = r.advance(dt, providerRef.current);
+        const session = pvpRef.current?.session;
+        if (session) {
+          // 送れるバケットをすべて送る。**コマンドが無い tick でも必ず送る**
+          // ——これを省くと「まだ届いていない」のか「操作しなかった」のかが
+          // 区別できず、相手が永久に待つことになる。
+          session.flush(r.tick, () => ({ tick: r.tick, sum: stateChecksum(r.state) }));
+        }
+        const res = r.advance(dt, session ?? providerRef.current);
         if (res.events.length > 0) applyEvents(res.events);
+        if (session) {
+          session.recordChecksum(r.tick, stateChecksum(r.state));
+          session.prune(r.tick);
+          const st = session.status;
+          if (st.kind !== netStatusRef.current.kind) {
+            netStatusRef.current = st;
+            forceRender(n => (n + 1) % 1000000);
+          } else {
+            netStatusRef.current = st;
+          }
+        }
         if (res.ticks > 0) forceRender(n => (n + 1) % 1000000);
       }
       // 期限切れの演出を掃除する
@@ -429,7 +478,7 @@ export const BattleScene: React.FC<Props> = ({
   useEffect(() => {
     if (!battleResult || xpGrantedRef.current) return;
     xpGrantedRef.current = true;
-    const families = simState.players.P1.deployedFamilies;
+    const families = simState.players[localPlayer].deployedFamilies;
     if (families.length > 0) {
       const events = grantBattleXp(families, battleResult === 'WIN');
       if (events.length > 0) setLevelUps(events);
@@ -442,7 +491,13 @@ export const BattleScene: React.FC<Props> = ({
   // PvP ではこの issue() が LockstepSession.issue() に差し替わり、
   // 入力遅延ぶん未来の tick に予約されたうえで相手にも送られる。
   const issue = useCallback((cmd: SimCommand) => {
-    providerRef.current.push(cmd);
+    const session = pvpRef.current?.session;
+    if (session) {
+      // 入力遅延ぶん未来の tick に予約され、同時に相手へも送られる
+      session.issue(cmd, runnerRef.current!.tick);
+    } else {
+      providerRef.current.push(cmd);
+    }
   }, []);
 
   const handleGridClick = (x: number, y: number) => {
@@ -452,24 +507,24 @@ export const BattleScene: React.FC<Props> = ({
     if (buildMode !== null) {
       const cost = IN_BATTLE_BUILD_COSTS[buildMode] ?? 999;
       if (Math.floor(gold) < cost) { showMessage('⚡ エナジーがたりない！', 1400); setBuildMode(null); return; }
-      if (!canDeployAt(r.state, r.statics, 'P1', x, y)) {
+      if (!canDeployAt(r.state, r.statics, localPlayer, x, y)) {
         showMessage('⛔ ここには建設できない！お城の近くに置こう', 1600); setBuildMode(null); return;
       }
-      issue({ type: 'BUILD', player: 'P1', building: buildMode, x, y });
+      issue({ type: 'BUILD', player: localPlayer, building: buildMode, x, y });
       setBuildMode(null);
       return;
     }
 
     if (selectedSpell) {
       if (spellCounts[selectedSpell] <= 0) return;
-      issue({ type: 'CAST_SPELL', player: 'P1', spell: selectedSpell, x, y });
+      issue({ type: 'CAST_SPELL', player: localPlayer, spell: selectedSpell, x, y });
       setSelectedSpell(null);
       return;
     }
 
     if (selectedOrderTroopId) {
       if (isBlockedCell(r.state, r.statics, x, y)) return;
-      issue({ type: 'MOVE_TO', player: 'P1', entityId: selectedOrderTroopId, x, y });
+      issue({ type: 'MOVE_TO', player: localPlayer, entityId: selectedOrderTroopId, x, y });
       setSelectedOrderTroopId(null);
       return;
     }
@@ -477,23 +532,23 @@ export const BattleScene: React.FC<Props> = ({
     // 出撃
     if (!selectedTroopId) return;
     if (isBlockedCell(r.state, r.statics, x, y)) return;
-    if (!canDeployAt(r.state, r.statics, 'P1', x, y)) {
+    if (!canDeployAt(r.state, r.statics, localPlayer, x, y)) {
       showMessage('⛔ ここには出せないよ！ お城やキャンプの近くから出そう', 1800);
       return;
     }
-    const line = r.cfg.unitStats.P1[selectedTroopId];
-    if (line && gold < Math.round(line.cost * r.cfg.costMult.P1)) {
+    const line = r.cfg.unitStats[localPlayer][selectedTroopId];
+    if (line && gold < Math.round(line.cost * r.cfg.costMult[localPlayer])) {
       showMessage('⚡ エナジーがたりない！ 問題を解くか、待ってためよう', 1600);
       return;
     }
-    issue({ type: 'DEPLOY', player: 'P1', troopId: selectedTroopId, x, y });
+    issue({ type: 'DEPLOY', player: localPlayer, troopId: selectedTroopId, x, y });
   };
 
   /** 出撃クールダウンの残り ms（表示用） */
   const deployCooldownLeftMs = (troopId: string): number => {
-    const last = simState.players.P1.deployCd[troopId];
+    const last = simState.players[localPlayer].deployCd[troopId];
     if (last === undefined) return 0;
-    const cdTicks = Math.max(1, Math.round(runner.cfg.deployCooldownMs.P1 / TICK_MS));
+    const cdTicks = Math.max(1, Math.round(runner.cfg.deployCooldownMs[localPlayer] / TICK_MS));
     const leftTicks = cdTicks - (simState.tick - last);
     return Math.max(0, leftTicks * TICK_MS);
   };
@@ -690,6 +745,57 @@ export const BattleScene: React.FC<Props> = ({
        {triggerMessage && (
          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-amber-900/95 border-2 border-amber-500 text-white font-bold text-xs py-2 px-6 rounded-full shadow-2xl animate-bounce backdrop-blur">
            {triggerMessage}
+         </div>
+       )}
+
+       {/* ── 通信状態の表示（PvPのみ）──
+           ロックステップは相手待ちで画面が止まる。無言のフリーズは
+           いちばん悪い体験なので、何が起きているかを必ず言葉で出す。 */}
+       {isPvp && netStatusRef.current.kind !== 'RUNNING' && (
+         <div className="absolute inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+           <div className="rounded-2xl border-2 px-8 py-6 text-center max-w-sm mx-4"
+             style={{
+               background: 'rgba(6,10,24,0.96)',
+               borderColor: netStatusRef.current.kind === 'WAITING' ? '#facc15' : '#ef4444',
+             }}>
+             {netStatusRef.current.kind === 'WAITING' && (
+               <>
+                 <div className="text-3xl mb-2 animate-pulse">📡</div>
+                 <div className="text-[#facc15] font-black text-base mb-1" style={{ fontFamily: 'Orbitron, monospace' }}>
+                   あいてを まっています…
+                 </div>
+                 <div className="text-white/60 text-xs">
+                   つうしんが すこし おそいみたい。そのまま まってね
+                   （{Math.round(netStatusRef.current.waitingMs / 1000)}びょう）
+                 </div>
+               </>
+             )}
+             {netStatusRef.current.kind === 'DROPPED' && (
+               <>
+                 <div className="text-3xl mb-2">🔌</div>
+                 <div className="text-[#ef4444] font-black text-base mb-1" style={{ fontFamily: 'Orbitron, monospace' }}>
+                   あいてと せつだんされました
+                 </div>
+                 <div className="text-white/60 text-xs mb-4">
+                   あいての つうしんが とぎれたため、この しょうぶは ここまでです。
+                 </div>
+                 <Button size="sm" onClick={() => onEndBattle(true, { gold: 0 })}>もどる</Button>
+               </>
+             )}
+             {netStatusRef.current.kind === 'DESYNC' && (
+               <>
+                 <div className="text-3xl mb-2">⚠️</div>
+                 <div className="text-[#ef4444] font-black text-base mb-1" style={{ fontFamily: 'Orbitron, monospace' }}>
+                   しあいを ちゅうだんしました
+                 </div>
+                 <div className="text-white/60 text-xs mb-4">
+                   ふたりの がめんで ちがう けっかに なってしまったため、
+                   ひきわけで しゅうりょうします。（tick {netStatusRef.current.tick}）
+                 </div>
+                 <Button size="sm" onClick={() => onEndBattle(false, { gold: 0 })}>もどる</Button>
+               </>
+             )}
+           </div>
          </div>
        )}
 
@@ -1164,7 +1270,7 @@ export const BattleScene: React.FC<Props> = ({
                                     key={order}
                                     onClick={() => {
                                       if (selectedOrderTroopId) {
-                                        issue({ type: 'SET_ORDER', player: 'P1', entityId: selectedOrderTroopId, order });
+                                        issue({ type: 'SET_ORDER', player: localPlayer, entityId: selectedOrderTroopId, order });
                                       }
                                       setSelectedOrderTroopId(null);
                                     }}
@@ -1320,14 +1426,14 @@ export const BattleScene: React.FC<Props> = ({
 
            {/* 補充（旧・独立した行を、この行のチップに統合してバーの高さを削った） */}
            <button
-             onClick={() => issue({ type: 'BUY_SPELL', player: 'P1', spell: 'HEAL' })}
+             onClick={() => issue({ type: 'BUY_SPELL', player: localPlayer, spell: 'HEAL' })}
              disabled={gold < 60}
              className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee] disabled:opacity-30 whitespace-nowrap"
            >
              ＋💊60⚡
            </button>
            <button
-             onClick={() => issue({ type: 'BUY_SPELL', player: 'P1', spell: 'RAGE' })}
+             onClick={() => issue({ type: 'BUY_SPELL', player: localPlayer, spell: 'RAGE' })}
              disabled={gold < 80}
              className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#fb923c]/40 bg-[#fb923c]/10 text-[#fb923c] disabled:opacity-30 whitespace-nowrap"
            >
@@ -1379,7 +1485,7 @@ export const BattleScene: React.FC<Props> = ({
                const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.png`;
                // コスト・クールダウンはシミュレーションが持つ確定値から引く
                // （UIで再計算するとシミュレーションとズレて「押せるのに出ない」が起きる）
-               const cost = Math.round((runner.cfg.unitStats.P1[troop.id]?.cost ?? 0) * runner.cfg.costMult.P1);
+               const cost = Math.round((runner.cfg.unitStats[localPlayer][troop.id]?.cost ?? 0) * runner.cfg.costMult[localPlayer]);
                const cdLeft = deployCooldownLeftMs(troop.id);
                const affordable = Math.floor(gold) >= cost && cdLeft <= 0;
                return (
@@ -1435,13 +1541,13 @@ export const BattleScene: React.FC<Props> = ({
             {selectedTroopId && (() => {
               const fam = CHARACTER_BY_ID[selectedTroopId];
               if (!fam) return null;
-              const rankCost = Math.round((runner.cfg.unitStats.P1[selectedTroopId]?.cost ?? fam.cost.gold) * 3);
+              const rankCost = Math.round((runner.cfg.unitStats[localPlayer][selectedTroopId]?.cost ?? fam.cost.gold) * 3);
               const can = Math.floor(gold) >= rankCost;
               return (
                 <button
                   onClick={() => {
                     if (Math.floor(gold) < rankCost) return;
-                    issue({ type: 'BUY_RANK', player: 'P1', troopId: selectedTroopId });
+                    issue({ type: 'BUY_RANK', player: localPlayer, troopId: selectedTroopId });
                     sfx.correct();
                   }}
                   disabled={!can}
@@ -1466,7 +1572,7 @@ export const BattleScene: React.FC<Props> = ({
          <InBattleQuiz
            subtopics={quizSubtopics}
            baseReward={34}
-           onReward={(en) => issue({ type: 'GRANT_ENERGY', player: 'P1', amount: en })}
+           onReward={(en) => issue({ type: 'GRANT_ENERGY', player: localPlayer, amount: en })}
            onClose={() => { setQuizOpen(false); setBattlePaused(false); }}
          />
        )}

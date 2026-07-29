@@ -399,6 +399,19 @@ export function assistLevelForLosses(consecutiveLosses: number): 0 | 1 | 2 {
   return 0;
 }
 
+/**
+ * PvP用の難易度。対人戦では敵AIが動かない（相手プレイヤーが動かす）ので、
+ * ウェーブ関連の値は使われない。意味を持つのは startEnergy と energyPerSec だけ。
+ * 両者に同じ値を使うことで、資源の面で完全に対等な条件になる。
+ */
+export const PVP_DIFFICULTY: ChapterDifficulty = {
+  enemyHpMult: 1, enemyDamageMult: 1,
+  defenseDamageMult: 1, defenseHpMult: 1,
+  firstSpawnDelayMs: 999999, enemySpawnRatePerSec: 0,
+  unitPool: ['grunt'],
+  startEnergy: 220, energyPerSec: 1.4,
+};
+
 /** サポート段階を反映した実効難易度を返す */
 export function effectiveDifficulty(ch: CampaignChapter, assist: 0 | 1 | 2): ChapterDifficulty {
   const a = ASSIST_LEVELS[assist];

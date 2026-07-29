@@ -541,18 +541,63 @@ Clash of Clans が採用している方式で、**「友だちの陣地を攻略
 | 4 | 注入したズレ（HP -0.5）をチェックサムが検出 | ✅ |
 | 5 | `catwars/sim/` に実装依存の数学関数が無いことを静的検査 | ✅ |
 
-## 残っていること（PvPを実際に遊べるようにするには）
+## 対戦導線（実装ずみ）
 
-シミュレーションと通信層は完成しているが、**対戦導線のUIは未実装**。
-必要なのは以下で、いずれも既存の仕組みの組み合わせで足りる。
+| ファイル | 役割 |
+|---|---|
+| `catwars/net/matchmaking.ts` | Firestore `catwars_rooms` による部屋の作成・参加・状態遷移 |
+| `catwars/components/pvp/CatWarsPvpScreen.tsx` | ロビー → 相手待ち → 対戦 の画面 |
+| `catwars/data/battleMaps.ts` | PvP用の左右対称マップ2種＋陣地の鏡写し `mirrorBase()` |
 
-1. `.env.local` に `VITE_FIREBASE_DATABASE_URL` を設定し、Firebase コンソールで
-   Realtime Database を有効化する（未設定ならソロプレイのみで動作する）。
-2. CAT-WARS のハブに「たいせん」導線を追加し、既存の Firestore ルーム管理
-   （`hooks/usePvpConnection.ts`）でマッチングする。
-3. マッチ成立時に `createMatchMeta()` で seed と両者の `PlayerSetup`・陣地を確定し、
-   両クライアントが同一の `SimConfig` を作る。
-4. `BattleScene` の `providerRef`（現在は `LocalCommandProvider`）を
-   `LockstepSession` に差し替え、毎フレーム `flush()` と `recordChecksum()` を呼ぶ。
-5. `LockstepStatus` が `WAITING` / `DESYNC` / `DROPPED` のときの表示を出す
-   （小学生向けなので「あいてを まっています…」のような明示が必須）。
+### 両者が同じ `SimConfig` に到達する仕組み
+
+ロックステップで最も事故りやすいのがここ。進化段階・バフ・陣地は端末ごとに
+違うので、**Firestoreの部屋ドキュメントに `PlayerPayload` として書き込み、
+対戦開始時に両者がその同じデータだけから設定を組み立てる**。
+自分の端末のストアは一切読まない。
+
+```
+ホスト: createRoom(自分のPayload)      → status='waiting'
+ゲスト: joinRoom(自分のPayload)        → guest欄が埋まる
+ホスト: startMatch()                   → serverTimestampを素にseedを確定, status='playing'
+両者  : 部屋ドキュメント（seed + host + guest）だけから SimConfig を構築
+両者  : FirebaseTransport + LockstepSession を張って対戦開始
+```
+
+seed をクライアントが決められると「有利な乱数を引くまで部屋を作り直す」
+ことができるため、**サーバー時刻を素にして撹拌した値**を使う。
+
+### 陣地の対称化
+
+キャンペーンのマップは「左＝自陣／右＝敵陣」の非対称設計なので対人戦には
+使えない。地形が x=13.5 を軸に完全な鏡写しになる専用マップを用意し、
+ゲスト（P2）の陣地は `mirrorBase()` で右半分へ反転して配置する。
+幅 w の建物は `x → GRID_W - x - w` で写る。
+
+### 通信状態の表示
+
+ロックステップは相手待ちで画面が止まる。**無言のフリーズはいちばん悪い
+体験**なので、`LockstepStatus` に応じて全画面オーバーレイを出す。
+
+| 状態 | 表示 |
+|---|---|
+| `WAITING`（1.5秒以上の待ち） | 「あいてを まっています…」＋経過秒数 |
+| `DROPPED`（10秒以上の無応答） | 「あいてと せつだんされました」＋もどるボタン |
+| `DESYNC` | 「しあいを ちゅうだんしました」＋引き分けで終了 |
+
+デシンク時に**片方だけを勝ちにしてはいけない**（両者の画面で結果が
+食い違っているため）。引き分けで打ち切る。
+
+## 残っていること
+
+- **`.env.local` の設定**（利用者側の作業）。
+  `VITE_FIREBASE_DATABASE_URL` を設定し、Firebase コンソールで
+  Realtime Database を有効化する。未設定の場合、たいせん画面は
+  「たいせんは まだ つかえません」と理由を表示し、
+  **ソロプレイには一切影響しない**。
+- **PvP専用の陣地づくり**。現在はキャンペーン第1章のレイアウトを流用している
+  （コアが無い場合は自動で1つ補う）。対戦用に別レイアウトを組めるようにすると
+  戦略の幅が広がる。
+- **実機での対戦テスト**。決定論・同期・セットアップはすべて自動テストで
+  検証ずみだが、実際のFirebase越しの往復遅延での挙動は未確認。
+  入力遅延は `recommendedInputDelayTicks(300)` = 8tick(400ms) を初期値にしている。

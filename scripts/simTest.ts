@@ -291,6 +291,110 @@ console.log('\n[5] シミュレーション内で実装依存の数学関数を�
   check('catwars/sim/ に禁止関数なし', offenders.length === 0, offenders.join(', '));
 }
 
+// ── テスト6: PvP対戦セットアップ（両者が同一の SimConfig を作れるか）───────
+
+console.log('\n[6] PvP対戦セットアップ（ホストとゲストが同じ設定に到達するか）');
+{
+  const { PVP_MAPS, PVP_MAP_BY_ID, mirrorBase } = await import('../catwars/data/battleMaps');
+  const { PVP_DIFFICULTY } = await import('../catwars/data/campaign');
+  const { BUILDING_STATS } = await import('../catwars/constants');
+  const { GRID_W } = await import('../catwars/types');
+
+  // 部屋のドキュメント（両者がFirestoreから読む、まったく同じデータ）
+  const roomDoc = {
+    seed: 3141592653,
+    mapId: 'pvp-mirror',
+    host: {
+      name: 'ホスト', stages: { barbarian: 2 as const }, buffs: { POWER_BOOST: 10 },
+      base: [{ type: BuildingType.TOWN_HALL, x: 0, y: 7 }, { type: BuildingType.CANNON, x: 3, y: 4 }],
+      spells: { HEAL: 2, RAGE: 2 },
+    },
+    guest: {
+      name: 'ゲスト', stages: { archer: 3 as const }, buffs: { SWIFT_ARMY: 8 },
+      base: [{ type: BuildingType.TOWN_HALL, x: 0, y: 7 }, { type: BuildingType.CANNON, x: 2, y: 11 }],
+      spells: { HEAL: 2, RAGE: 2 },
+    },
+  };
+
+  // 両クライアントが「部屋のデータだけ」から独立に設定を組み立てる
+  const buildFromRoom = () => {
+    const map = PVP_MAP_BY_ID[roomDoc.mapId];
+    const cfg = buildSimConfig({
+      mode: 'PVP', seed: roomDoc.seed,
+      chapter: { enemyName: roomDoc.guest.name },
+      difficulty: PVP_DIFFICULTY, battleMap: map,
+      p1: { stages: roomDoc.host.stages, buffs: { values: roomDoc.host.buffs } },
+      p2: { stages: roomDoc.guest.stages, buffs: { values: roomDoc.guest.buffs } },
+    });
+    const widthOf = (t: BuildingType) => BUILDING_STATS[t].width;
+    return {
+      config: cfg,
+      init: {
+        playerBuildings: roomDoc.host.base,
+        defenderBuildings: mirrorBase(roomDoc.guest.base, widthOf),
+        spellCharges: { P1: roomDoc.host.spells, P2: roomDoc.guest.spells },
+      },
+    };
+  };
+
+  const asHost = buildFromRoom();
+  const asGuest = buildFromRoom();
+  check('ホスト側とゲスト側の SimConfig が完全に一致',
+    JSON.stringify(asHost.config) === JSON.stringify(asGuest.config));
+  check('ホスト側とゲスト側の初期配置が完全に一致',
+    JSON.stringify(asHost.init) === JSON.stringify(asGuest.init));
+
+  // 進化段階の違いが実際に反映されているか（設定が素通りしていないかの確認）
+  check('P1とP2で異なるユニット性能になっている（設定が効いている）',
+    asHost.config.unitStats.P1.barbarian.hp !== asHost.config.unitStats.P2.barbarian.hp ||
+    asHost.config.unitStats.P1.archer.hp !== asHost.config.unitStats.P2.archer.hp);
+
+  // マップの左右対称性
+  for (const m of PVP_MAPS) {
+    const set = new Set(m.terrain.map(t => `${t.x},${t.y},${t.type}`));
+    const sym = m.terrain.every(t => set.has(`${GRID_W - 1 - t.x},${t.y},${t.type}`));
+    check(`${m.id} の地形が左右対称`, sym, `${m.terrain.length}マス`);
+  }
+
+  // ミラーした陣地が右半分に収まり、元と鏡像関係にあること
+  const widthOf = (t: BuildingType) => BUILDING_STATS[t].width;
+  const mirrored = mirrorBase(roomDoc.guest.base, widthOf);
+  const okMirror = roomDoc.guest.base.every((b, i) => {
+    const w = widthOf(b.type);
+    return mirrored[i].x === GRID_W - b.x - w
+        && mirrored[i].x + w - 1 === GRID_W - 1 - b.x
+        && mirrored[i].x >= GRID_W / 2;
+  });
+  check('ゲストの陣地が正しく右半分へ鏡写しされる', okMirror);
+
+  // 実際に PvP を1試合まわして、両者が同じ結末に至るか
+  const bus2 = new LocalBus(2);
+  const r1 = new SimRunner(asHost.config, asHost.init);
+  const r2 = new SimRunner(asGuest.config, asGuest.init);
+  const s1 = new LockstepSession(bus2.transportFor('P1'), ['P1', 'P2'], { inputDelayTicks: 8 });
+  const s2 = new LockstepSession(bus2.transportFor('P2'), ['P1', 'P2'], { inputDelayTicks: 8 });
+  const rng2 = new DetRNG(24680);
+  for (let frame = 0; frame < 4000; frame++) {
+    if (frame % 7 === 0) s1.issue({ type: 'DEPLOY', player: 'P1', troopId: 'barbarian', x: rng2.int(6), y: rng2.int(16) }, r1.tick);
+    if (frame % 7 === 3) s2.issue({ type: 'DEPLOY', player: 'P2', troopId: 'archer', x: 27 - rng2.int(6), y: rng2.int(16) }, r2.tick);
+    s1.flush(r1.tick, () => ({ tick: r1.tick, sum: stateChecksum(r1.state) }));
+    s2.flush(r2.tick, () => ({ tick: r2.tick, sum: stateChecksum(r2.state) }));
+    bus2.pump();
+    r1.advance(TICK_MS, s1); r2.advance(TICK_MS, s2);
+    s1.recordChecksum(r1.tick, stateChecksum(r1.state));
+    s2.recordChecksum(r2.tick, stateChecksum(r2.state));
+    s1.prune(r1.tick); s2.prune(r2.tick);
+    if (r1.state.result && r2.state.result) break;
+  }
+  check('PvP1試合を通して両者の状態が一致',
+    r1.tick === r2.tick && stateChecksum(r1.state) === stateChecksum(r2.state),
+    `${r1.tick} tick`);
+  check('両者が同じ勝敗を得た', r1.state.result === r2.state.result,
+    `P1側=${r1.state.result ?? '継続'} P2側=${r2.state.result ?? '継続'}`);
+  check('決着がついた（PvPの勝利条件が機能している）', r1.state.result !== null,
+    `勝者=${r1.state.result}`);
+}
+
 console.log(failures === 0
   ? '\n✅ すべて成功\n'
   : `\n❌ ${failures} 件の失敗\n`);
