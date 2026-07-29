@@ -63,9 +63,14 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.TOWN_HALL, x: 24, y: 7 },
       { type: BuildingType.CANNON, x: 19, y: 3 },
       { type: BuildingType.CANNON, x: 19, y: 12 },
+      // ②の見直し: 壁が3マス(y6-8)だけでコアの真下(y9)がノーガードだったため、
+      // 上下1マスずつ余白を持たせて5マス(y5-9)に拡張。まっすぐ来た部隊は壁で
+      // 止め、大回りしてきた部隊は上下の砲台(19,3)(19,12)が咎める形にする。
+      { type: BuildingType.WALL, x: 22, y: 5 },
       { type: BuildingType.WALL, x: 22, y: 6 },
       { type: BuildingType.WALL, x: 22, y: 7 },
       { type: BuildingType.WALL, x: 22, y: 8 },
+      { type: BuildingType.WALL, x: 22, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 1 },
     ],
     playerDeployZone: { xMin: 0, xMax: 5, yMin: 0, yMax: 15 },
@@ -86,6 +91,8 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.TOWN_HALL, x: 24, y: 7 },
       { type: BuildingType.CANNON, x: 22, y: 3 },
       { type: BuildingType.CANNON, x: 22, y: 12 },
+      // ②の見直し: 上に1マス足して壁をコアの上下対称(y5-9)にそろえた
+      { type: BuildingType.WALL, x: 23, y: 5 },
       { type: BuildingType.WALL, x: 23, y: 6 },
       { type: BuildingType.WALL, x: 23, y: 7 },
       { type: BuildingType.WALL, x: 23, y: 8 },
@@ -142,7 +149,12 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.CANNON, x: 18, y: 3 },
       { type: BuildingType.CANNON, x: 18, y: 12 },
       { type: BuildingType.CANNON, x: 22, y: 7 },
+      // ②の見直し: 壁が (23,6)(23,9) の2マスだけで、コアの真横(y7,8)が
+      // まる見えだった。連続した壁(y6-9)にして、砲台(22,7)がその手前で
+      // まっすぐ来る部隊を狙い撃ちできる配置にした。
       { type: BuildingType.WALL, x: 23, y: 6 },
+      { type: BuildingType.WALL, x: 23, y: 7 },
+      { type: BuildingType.WALL, x: 23, y: 8 },
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.HIDDEN_TESLA, x: 21, y: 10 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 1 },
@@ -170,8 +182,11 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.CANNON, x: 21, y: 12 },
       { type: BuildingType.CANNON, x: 22, y: 7 },
       { type: BuildingType.HIDDEN_TESLA, x: 20, y: 8 },
+      // ②の見直し: (23,8) が抜けていて、コアのすぐ横に壁のすき間ができて
+      // いた(意図しない抜け穴)。y6-9の連続した壁にふさいだ。
       { type: BuildingType.WALL, x: 23, y: 6 },
       { type: BuildingType.WALL, x: 23, y: 7 },
+      { type: BuildingType.WALL, x: 23, y: 8 },
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 12 },
     ],

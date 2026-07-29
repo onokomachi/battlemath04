@@ -12,7 +12,7 @@ import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore'
 import { useArmyStore } from '../../store/useArmyStore';
 import { CHARACTERS, CHARACTER_BY_ID, STAGE_MULT, getCharacterSprite, spriteFamilyForSubType, stageForLevel } from '../../data/characters';
 import { PinchZoomLayer } from './PinchZoomLayer';
-import { CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ASSIST_LEVELS, EnemyUnitKind } from '../../data/campaign';
+import { CampaignChapter, ChapterDifficulty, ENEMY_UNIT_STATS, ENEMY_UNIT_COST, ASSIST_LEVELS, EnemyUnitKind, pickWeightedEnemyUnit } from '../../data/campaign';
 import { collectWallCells, hasLineOfSight, isFlying, pickDefenseTarget } from '../../utils/combatRules';
 import {
   ALIEN_STATS, LAVA_DPS, MeteorState, collectLavaCells, isOnLava,
@@ -281,7 +281,10 @@ export const BattleScene: React.FC<Props> = ({
   const gameLoopRef = useRef<number | undefined>(undefined);
   const skeletonsSpawnedRef = useRef(false);
   const lastEnemySpawnRef = useRef(0);
-  const enemyWaveRef = useRef(0);
+  // 敵の増援ポイント経済: 次に出す1体をあらかじめ決めておき、
+  // そのキャラのコストに応じた間隔があいたら出現させる
+  const pendingEnemyUnitRef = useRef<EnemyUnitKind | null>(null);
+  const enemySpawnCountRef = useRef(0);
   const bossSpawnedRef = useRef(false);
   // ── ステージギミックの状態 ──
   const lavaCellsRef = useRef<Set<string>>(new Set());
@@ -755,47 +758,54 @@ export const BattleScene: React.FC<Props> = ({
         }
       }
 
-      // --- ENEMY WAVE SPAWNER: 章ごとの難易度仕様にしたがって援軍を送る ---
-      // 旧実装は「18秒→12秒・最大3体・2種類固定」のハードコードで、章の概念が無かった。
-      // ここを difficulty 駆動にしたことで、⑤の段階的な難易度設計が実際に効くようになる。
-      if (battleStarted && lastEnemySpawnRef.current === 0) lastEnemySpawnRef.current = now;
-      const spawnInterval = enemyWaveRef.current === 0
-        ? difficulty.firstWaveDelayMs
-        : difficulty.waveIntervalMs;
-      if (battleStarted && battleResult === null && lastEnemySpawnRef.current > 0
-          && now - lastEnemySpawnRef.current > spawnInterval) {
-        lastEnemySpawnRef.current = now;
-        enemyWaveRef.current += 1;
-        const wave = enemyWaveRef.current;
+      // --- ENEMY SPAWNER: 敵の増援ポイント経済（①） ---
+      // 旧実装は「ウェーブ間隔16〜36秒・毎回1〜4体」のバッチ湧きで、間隔が
+      // 長すぎて手ごたえがなかった。プレイヤーが「問題を解いて⚡をため、
+      // ネコを1体出す」のと同じテンポ感になるよう、敵も difficulty.enemySpawnRatePerSec
+      // で決まる速さでポイントをため、たまるたびに1体ずつ出す経済に統一した。
+      // 出現位置も、旧実装は自陣建物群の平均点1か所だけだったため「いつも同じ
+      // 湧き穴から出てくる」ように見えていた。敵陣の右がわの通行可能なマスから
+      // 毎回ランダムに選ぶことで、複数の場所から攻めてくるように見せている。
+      if (battleStarted && battleResult === null) {
+        if (lastEnemySpawnRef.current === 0) lastEnemySpawnRef.current = now;
+        if (!pendingEnemyUnitRef.current) {
+          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(difficulty.unitPool, rngRef.current);
+        }
+        const pendingKind = pendingEnemyUnitRef.current;
+        const isFirstSpawn = enemySpawnCountRef.current === 0;
+        const intervalMs = isFirstSpawn
+          ? difficulty.firstSpawnDelayMs
+          : Math.max(1500, (ENEMY_UNIT_COST[pendingKind] / difficulty.enemySpawnRatePerSec) * 1000);
 
-        const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
-        if (defenderBldgs.length > 0) {
-          const spawnBaseX = Math.max(...defenderBldgs.map(b => b.x));
-          const spawnBaseY = Math.round(defenderBldgs.reduce((s, b) => s + b.y, 0) / defenderBldgs.length);
+        if (now - lastEnemySpawnRef.current > intervalMs) {
+          lastEnemySpawnRef.current = now;
+          enemySpawnCountRef.current += 1;
+          const spawnCount = enemySpawnCountRef.current;
 
-          // ウェーブが進むと体数が waveSize → waveSizeMax まで増える
-          const count = Math.min(
-            difficulty.waveSizeMax,
-            difficulty.waveSize + Math.floor((wave - 1) / 3),
-          );
+          const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
+          if (defenderBldgs.length > 0) {
+            const isBossSpawn = difficulty.bossAtSpawnCount === spawnCount && !bossSpawnedRef.current;
+            if (isBossSpawn) bossSpawnedRef.current = true;
+            const kind: EnemyUnitKind = isBossSpawn ? 'boss' : pendingKind;
 
-          const isBossWave = difficulty.bossAtWave === wave && !bossSpawnedRef.current;
-          if (isBossWave) bossSpawnedRef.current = true;
+            // 敵陣の右がわの通行可能なマスをすべて拾い、ランダムに1つ選ぶ
+            const spawnX = Math.min(GRID_W - 1, Math.max(...defenderBldgs.map(b => b.x)) + 1);
+            const candidateYs: number[] = [];
+            for (let y = 0; y < GRID_H; y++) {
+              if (!obstaclesRef.current.has(`${spawnX},${y}`)) candidateYs.push(y);
+            }
+            const spawnY = candidateYs.length > 0
+              ? candidateYs[Math.floor(rngRef.current.next() * candidateYs.length)]
+              : Math.round(GRID_H / 2);
 
-          const kinds: EnemyUnitKind[] = isBossWave
-            ? ['boss']
-            : Array.from({ length: count }, (_, i) =>
-                difficulty.unitPool[(wave + i) % difficulty.unitPool.length]);
-
-          kinds.forEach((kind, i) => {
             const s = ENEMY_UNIT_STATS[kind];
             const hp = Math.round(s.hp * difficulty.enemyHpMult);
             nextEntities.push({
-              id: `wave-${now}-${i}`,
+              id: `wave-${now}-${spawnCount}`,
               type: 'TROOP',
               subType: s.subType,
-              x: Math.max(0, Math.min(GRID_W - 1, spawnBaseX + 1 + (i % 2) * 0.8)),
-              y: Math.max(0, Math.min(GRID_H - 1, spawnBaseY + (i - 1) * 1.2)),
+              x: Math.max(0, Math.min(GRID_W - 1, spawnX + (rngRef.current.next() - 0.5) * 0.6)),
+              y: Math.max(0, Math.min(GRID_H - 1, spawnY + (rngRef.current.next() - 0.5) * 0.6)),
               hp,
               maxHp: hp,
               damage: Math.round(s.damage * difficulty.enemyDamageMult),
@@ -807,12 +817,15 @@ export const BattleScene: React.FC<Props> = ({
               targetPreference: 'ANY',
               path: [],
             });
-          });
 
-          setTriggerMessage(isBossWave
-            ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
-            : `⚠️ 敵の援軍 Wave ${wave}（${ENEMY_UNIT_STATS[kinds[0]].label}）が出現！`);
-          setTimeout(() => setTriggerMessage(null), 3000);
+            setTriggerMessage(isBossSpawn
+              ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
+              : `⚠️ 敵の増援（${s.label}）が出現！`);
+            setTimeout(() => setTriggerMessage(null), 2200);
+          }
+
+          // 次の1体を先ぎめしておく（そのコストが次回の待ち時間を決める）
+          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(difficulty.unitPool, rngRef.current);
         }
       }
 
@@ -1105,80 +1118,88 @@ export const BattleScene: React.FC<Props> = ({
                 // HOLD命令: 移動しない、攻撃のみ継続
                 entity.path = [];
             }
-            else if (entity.targetPreference === 'MOVE_TO' && entity.customTarget) {
-                // MOVE_TO命令: 指定座標へ移動、到達後に通常戦闘復帰
-                const ct = entity.customTarget;
-                const distToCustom = Math.sqrt(Math.pow(ct.x - entity.x, 2) + Math.pow(ct.y - entity.y, 2));
-                if (distToCustom < 0.8) {
-                    entity.customTarget = undefined;
-                    entity.targetPreference = 'ANY';
-                    entity.path = [];
-                } else if (!entity.path || entity.path.length === 0) {
-                    const path = findPathWithTerrain(
-                        { x: entity.x, y: entity.y },
-                        ct,
-                        obstaclesRef.current,
-                        terrainCostsRef.current
-                    );
-                    if (path && path.length > 0) {
-                        entity.path = path;
-                    } else {
-                        const dx = ct.x - entity.x;
-                        const dy = ct.y - entity.y;
-                        const angle = Math.atan2(dy, dx);
-                        entity.x += Math.cos(angle) * (entity.moveSpeed * 0.010);
-                        entity.y += Math.sin(angle) * (entity.moveSpeed * 0.010);
+            else {
+                // MOVE_TO命令(指定座標へ移動)と通常の戦闘移動(bestTargetへ接近)を
+                // それぞれの方法で経路(entity.path)だけ決め、実際にその経路にそって
+                // 進める「Vectors apply stepper」はこの後で共通化して1回だけ行う。
+                // 以前は MOVE_TO 側だけ経路を計算した直後に return してしまい、
+                // stepper に一度も到達できず「経路は決まるのに一歩も動かない」
+                // 不具合になっていた(④のバグ報告の原因)。
+                if (entity.targetPreference === 'MOVE_TO' && entity.customTarget) {
+                    // MOVE_TO命令: 指定座標へ移動、到達後に通常戦闘復帰
+                    const ct = entity.customTarget;
+                    const distToCustom = Math.sqrt(Math.pow(ct.x - entity.x, 2) + Math.pow(ct.y - entity.y, 2));
+                    if (distToCustom < 0.8) {
+                        entity.customTarget = undefined;
+                        entity.targetPreference = 'ANY';
+                        entity.path = [];
+                    } else if (!entity.path || entity.path.length === 0) {
+                        const path = findPathWithTerrain(
+                            { x: entity.x, y: entity.y },
+                            ct,
+                            obstaclesRef.current,
+                            terrainCostsRef.current
+                        );
+                        if (path && path.length > 0) {
+                            entity.path = path;
+                        } else {
+                            // 経路が見つからない場合だけ直線でにじり寄る(壁の直前などのフォールバック)
+                            const dx = ct.x - entity.x;
+                            const dy = ct.y - entity.y;
+                            const angle = Math.atan2(dy, dx);
+                            entity.x += Math.cos(angle) * (entity.moveSpeed * 0.010);
+                            entity.y += Math.sin(angle) * (entity.moveSpeed * 0.010);
+                        }
+                    }
+                } else {
+                    // Move towards nearest coordinate
+                    if (!entity.path || entity.path.length === 0) {
+                         // 飛行系は壁を無視して直進できる（その代わり壁のかげにも隠れられない）
+                         const obstacles = isFlying(entity.subType)
+                           ? obstaclesNoWallRef.current
+                           : obstaclesRef.current;
+                         const path = findPathWithTerrain(
+                             {x: entity.x, y: entity.y},
+                             {x: bestTarget.x, y: bestTarget.y},
+                             obstacles,
+                             terrainCostsRef.current
+                         );
+
+                         if (path && path.length > 0) {
+                             entity.path = path;
+                         } else {
+                             // Line pathing / break obstruction walls
+                             const dx = bestTarget.x - entity.x;
+                             const dy = bestTarget.y - entity.y;
+                             const angle = Math.atan2(dy, dx);
+                             entity.x += Math.cos(angle) * (currentMoveSpeed * 0.010);
+                             entity.y += Math.sin(angle) * (currentMoveSpeed * 0.010);
+
+                             const wallCol = defenders.find(d =>
+                                 d.subType === 'WALL' &&
+                                 Math.abs(d.x - entity.x) < 0.8 &&
+                                 Math.abs(d.y - entity.y) < 0.8
+                              );
+                              if (wallCol && now - entity.lastAttack > currentAttackSpeed) {
+                                  const prevHp = wallCol.hp;
+                                  wallCol.hp -= currentDamage;
+                                  if (wallCol.hp < prevHp) newDamagedEntities.add(wallCol.id);
+                                  entity.lastAttack = now;
+                                  sfx.hit();
+                              }
+                              return;
+                         }
                     }
                 }
-            }
-            else {
-                // Move towards nearest coordinate
-                if (!entity.path || entity.path.length === 0) {
-                     // 飛行系は壁を無視して直進できる（その代わり壁のかげにも隠れられない）
-                     const obstacles = isFlying(entity.subType)
-                       ? obstaclesNoWallRef.current
-                       : obstaclesRef.current;
-                     const path = findPathWithTerrain(
-                         {x: entity.x, y: entity.y},
-                         {x: bestTarget.x, y: bestTarget.y},
-                         obstacles,
-                         terrainCostsRef.current
-                     );
 
-                     if (path && path.length > 0) {
-                         entity.path = path;
-                     } else {
-                         // Line pathing / break obstruction walls
-                         const dx = bestTarget.x - entity.x;
-                         const dy = bestTarget.y - entity.y;
-                         const angle = Math.atan2(dy, dx);
-                         entity.x += Math.cos(angle) * (currentMoveSpeed * 0.010);
-                         entity.y += Math.sin(angle) * (currentMoveSpeed * 0.010);
-                         
-                         const wallCol = defenders.find(d => 
-                             d.subType === 'WALL' && 
-                             Math.abs(d.x - entity.x) < 0.8 && 
-                             Math.abs(d.y - entity.y) < 0.8
-                          );
-                          if (wallCol && now - entity.lastAttack > currentAttackSpeed) {
-                              const prevHp = wallCol.hp;
-                              wallCol.hp -= currentDamage;
-                              if (wallCol.hp < prevHp) newDamagedEntities.add(wallCol.id);
-                              entity.lastAttack = now;
-                              sfx.hit();
-                          }
-                          return;
-                     }
-                }
-
-                // Vectors apply stepper
+                // Vectors apply stepper（MOVE_TO・通常移動で共通）
                 let moveX = 0, moveY = 0;
                 if (entity.path && entity.path.length > 0) {
                     const nextNode = entity.path[0];
                     const dx = nextNode.x - entity.x;
                     const dy = nextNode.y - entity.y;
                     const distToNode = Math.sqrt(dx * dx + dy * dy);
-                    const moveStep = currentMoveSpeed * 0.013; 
+                    const moveStep = currentMoveSpeed * 0.013;
 
                     if (distToNode < moveStep) {
                         entity.x = nextNode.x;
@@ -1194,8 +1215,8 @@ export const BattleScene: React.FC<Props> = ({
                 let sepX = 0, sepY = 0;
                 const separationRadius = 0.55;
                 const separationForce = 0.035;
-                const neighbors = nextEntities.filter(other => 
-                    other.id !== entity.id && 
+                const neighbors = nextEntities.filter(other =>
+                    other.id !== entity.id &&
                     other.type === 'TROOP' &&
                     Math.abs(other.x - entity.x) < separationRadius &&
                     Math.abs(other.y - entity.y) < separationRadius
