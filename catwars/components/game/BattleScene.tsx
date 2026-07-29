@@ -1,11 +1,15 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { GameState, Troop, BuildingType, BattleEntity, GRID_W, GRID_H } from '../../types';
 import { BUILDING_STATS } from '../../constants';
 import { Button } from '../ui/Button';
 import { Swords, Trophy, Skull, Zap, Heart } from '../ui/Icons';
-import { buildTerrainCostMap, findPathWithTerrain, TerrainCostMap } from '../../utils/aiEngine';
-import { SeededRNG } from '../../utils/random';
 import { TerrainLayer } from './TerrainLayer';
+// ── 決定論シミュレーション（catwars/sim/）──
+// ゲーム状態はすべてこちらが持つ。このコンポーネントは描画と入力だけを担当する。
+import { SimRunner, LocalCommandProvider } from '../../sim/runner';
+import { canDeployAt, isBlockedCell } from '../../sim/simulate';
+import { buildSimConfig } from '../../sim/setup';
+import { SimCommand, SimEvent, TICK_MS } from '../../sim/types';
 import { InBattleQuiz } from './InBattleQuiz';
 import { sfx } from '../../utils/audioEngine';
 import { useProgressStore, BUFF_LEVEL_INFO } from '../../store/useProgressStore';
@@ -217,48 +221,46 @@ export const BattleScene: React.FC<Props> = ({
   quizSubtopics = [],
   onEndBattle,
 }) => {
-  const [entities, setEntities] = useState<BattleEntity[]>([]);
+  // ══════════════════════════════════════════════════════════════════════
+  // このコンポーネントは「決定論シミュレーション（catwars/sim/）を駆動して
+  // 描画するだけの殻」になっている。ゲーム状態は一切 React state に持たない。
+  //
+  //   ・状態を変えるのは simulateTick() だけ。UIは SimCommand を積むのみ
+  //   ・弾道・ヒットエフェクト・メッセージ・音は SimEvent として受け取る
+  //   ・シミュレーションは 20Hz 固定。描画は 60fps のまま
+  //
+  // こうしてある理由は docs/PVP_LOCKSTEP.md を参照。要点は2つ。
+  //   (1) PvP（ロックステップ同期）は「両端末で同じ計算をする」ことが前提で、
+  //       React の再描画タイミングに状態遷移がぶら下がっていると成立しない。
+  //   (2) 旧実装は requestAnimationFrame ごとに 1 回進めて移動量を
+  //       「1フレームあたり」で加算していたため、**120Hz の端末では 60Hz の
+  //       端末の2倍の速さでゲームが進んでいた**。固定タイムステップでこれが直る。
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── UIだけの状態（シミュレーションには影響しない）──
   const [selectedTroopId, setSelectedTroopId] = useState<string | null>(null);
-  const [availableTroops, setAvailableTroops] = useState<Troop[]>([]);
-  const [battleStarted, setBattleStarted] = useState(false);
-  const [battleResult, setBattleResult] = useState<'WIN' | 'LOSE' | null>(null);
-  
-  // Interactive Active Spells
   const [selectedSpell, setSelectedSpell] = useState<'HEAL' | 'RAGE' | null>(null);
-  // 呪文の所持数は拠点の規模（loadout）で決まる ＝ 拠点づくりが戦闘に効く導線のひとつ
-  const [spellCounts, setSpellCounts] = useState(() => ({
-    HEAL: loadout?.healCharges ?? 2,
-    RAGE: loadout?.rageCharges ?? 2,
-  }));
-  // 開戦前のストーリーブリーフィング（②）
+  const [selectedOrderTroopId, setSelectedOrderTroopId] = useState<string | null>(null);
+  const [buildMode, setBuildMode] = useState<BuildingType | null>(null);
   const [briefingOpen, setBriefingOpen] = useState(true);
-  const [activeSpells, setActiveSpells] = useState<{ id: string; x: number; y: number; type: 'HEAL' | 'RAGE'; endTime: number }[]>([]);
-
-  // Projectiles
-  const [projectiles, setProjectiles] = useState<{ id: string; fromX: number; fromY: number; toX: number; toY: number; startedAt: number; duration: number; type: 'CANNON' | 'TESLA' }[]>([]);
-  // 兵士の攻撃エフェクト（攻撃タイプごとに見た目を変える）。SLASH=斬撃, BOLT=遠距離, SHOCK=巨人/ボスの衝撃
-  const [hitFx, setHitFx] = useState<{ id: string; x: number; y: number; fromX: number; fromY: number; kind: 'SLASH' | 'BOLT' | 'SHOCK'; color: string; startedAt: number; duration: number }[]>([]);
-
-  // Sensory Juice States
-  const [damagedEntities, setDamagedEntities] = useState<Set<string>>(new Set());
-  const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
-
   const [battlePaused, setBattlePaused] = useState(false);
   const [quizOpen, setQuizOpen] = useState(false);
-  const [selectedOrderTroopId, setSelectedOrderTroopId] = useState<string | null>(null);
-  const terrainCostsRef = useRef<TerrainCostMap>(new Map());
+  const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
+  const [damagedEntities, setDamagedEntities] = useState<Set<string>>(new Set());
+  const [projectiles, setProjectiles] = useState<{ id: string; fromX: number; fromY: number; toX: number; toY: number; startedAt: number; duration: number; type: 'CANNON' | 'TESLA' }[]>([]);
+  const [hitFx, setHitFx] = useState<{ id: string; x: number; y: number; fromX: number; fromY: number; kind: 'SLASH' | 'BOLT' | 'SHOCK'; color: string; startedAt: number; duration: number }[]>([]);
+  const [levelUps, setLevelUps] = useState<import('../../store/useArmyStore').LevelUpEvent[]>([]);
+  const [, forceRender] = useState(0);
 
   const { getTodayBuffs, unlockCharacterToday, permanentUnlocks, unlockedToday, unlockedTodayDate } = useProgressStore();
   const { getStage, grantBattleXp } = useArmyStore();
   const activeBuffs = getTodayBuffs();
   const hasBuff = (t: string) => activeBuffs.some(b => b.type === t);
-  // バフのレベル（0=無効, 1=小, 2=中, 3=大）
   const buffLvl = (t: string): 0 | 1 | 2 | 3 => {
     const b = activeBuffs.find(b => b.type === t);
     if (!b) return 0;
     return ((b as { level?: number }).level ?? 2) as 0 | 1 | 2 | 3;
   };
-  // バフの現在レベルの効果量（小/中/大の数値）。無効なら0。
   const buffVal = (t: string): number => {
     const lv = buffLvl(t);
     if (lv === 0) return 0;
@@ -266,50 +268,235 @@ export const BattleScene: React.FC<Props> = ({
     return info ? info.values[lv - 1] : 0;
   };
 
-  // ── 戦闘中ゴールド（にゃんこ式・このバトル内だけの通貨）──
-  const [gold, setGold] = useState(0);
-  const lastGoldTickRef = useRef(0);
-  const goldKillRef = useRef(0);                               // 撃破・破壊で得たゴールドのバッファ
-  const deployCdRef = useRef<Record<string, number>>({});      // 系統ごとの出撃クールダウン
-  const [, forceTick] = useState(0);                            // CD表示の再描画用
-  // この戦闘で出撃した系統（XP付与用）
-  const deployedFamiliesRef = useRef<Set<string>>(new Set());
+  // ── シミュレーションの初期化（1回だけ）──
+  //
+  // ★重要★ 進化段階・デイリーバフは端末ごとに違うので、ここで**すべて解決して
+  // SimConfig に焼き込む**。シミュレーションの途中でストアを参照してはいけない
+  // （相手の端末には無い情報なので、参照した瞬間にデシンクする）。
+  const runnerRef = useRef<SimRunner | null>(null);
+  const providerRef = useRef(new LocalCommandProvider());
+  if (runnerRef.current === null) {
+    const values: Record<string, number> = {};
+    for (const b of activeBuffs) {
+      const info = (BUFF_LEVEL_INFO as Record<string, { values: number[] }>)[b.type];
+      const lv = ((b as { level?: number }).level ?? 2) as 1 | 2 | 3;
+      if (info) values[b.type] = info.values[lv - 1];
+    }
+    const stages: Record<string, 1 | 2 | 3> = {};
+    for (const c of CHARACTERS) stages[c.id] = getStage(c.id);
 
-  // 一時ランクアップ（戦闘中ゴールドで購入。このバトル中だけ +1段階相当）
-  const [tempRank, setTempRank] = useState<Record<string, number>>({});
+    const cfg = buildSimConfig({
+      mode: 'PVE',
+      // ソロプレイなので seed はローカルで決めてよい。
+      // PvP ではサーバー（RTDBのserverTimestamp由来）が確定させた値を使う
+      // ——クライアントが選べると有利な乱数を引くまで作り直せてしまうため。
+      seed: (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0,
+      chapter, difficulty, battleMap: battleMap ?? null,
+      p1: { stages, buffs: { values } },
+    });
+    runnerRef.current = new SimRunner(cfg, {
+      defenderBuildings: defenderBuildings.map(b => ({ type: b.type, x: b.x, y: b.y })),
+      playerBuildings: playerDeployments.map(b => ({ type: b.type, x: b.x, y: b.y })),
+      spellCharges: {
+        P1: { HEAL: loadout?.healCharges ?? 2, RAGE: loadout?.rageCharges ?? 2 },
+        P2: { HEAL: 0, RAGE: 0 },
+      },
+    });
+  }
+  const runner = runnerRef.current;
+  const simState = runner.state;
 
-  const [buildMode, setBuildMode] = useState<BuildingType | null>(null);
+  // ── JSX が読む値（すべてシミュレーション状態からの派生）──
+  const entities = simState.entities;
+  const gold = simState.players.P1.energy;
+  const battleResult: 'WIN' | 'LOSE' | null =
+    simState.result === null ? null : simState.result === 'P1' ? 'WIN' : 'LOSE';
+  const battleStarted = simState.started;
+  const spellCounts = simState.players.P1.spells;
+  const tempRank = simState.players.P1.tempRank;
 
-  const rngRef = useRef(new SeededRNG(12345));
-  const obstaclesRef = useRef<Set<string>>(new Set());
-  const gameLoopRef = useRef<number | undefined>(undefined);
-  const skeletonsSpawnedRef = useRef(false);
-  const lastEnemySpawnRef = useRef(0);
-  // 敵の増援ポイント経済: 次に出す1体をあらかじめ決めておき、
-  // そのキャラのコストに応じた間隔があいたら出現させる
-  const pendingEnemyUnitRef = useRef<EnemyUnitKind | null>(null);
-  const enemySpawnCountRef = useRef(0);
-  const bossSpawnedRef = useRef(false);
-  /** 開幕時に敵拠点が存在したか（勝利条件の判定に使う） */
-  const hadEnemyBuildingsRef = useRef(false);
-  // ── ステージギミックの状態 ──
-  const lavaCellsRef = useRef<Set<string>>(new Set());
-  const lastLavaTickRef = useRef(0);
-  const [meteors, setMeteors] = useState<MeteorState[]>([]);
-  const meteorsRef = useRef<MeteorState[]>([]);
-  const lastMeteorRef = useRef<Record<number, number>>({});
-  const lastAlienRef = useRef<Record<number, number>>({});
-  const titanDirRef = useRef<1 | -1>(1);
-  const lastFrameRef = useRef(0);
-  // 防衛施設の「照準」状態: 施設ID → { targetId, lockedAt }。
-  // 標的を変えるたびに aimTimeMs ぶんの予告時間を挟むための記録（⑥ 反応の余地）。
-  const aimRef = useRef<Record<string, { targetId: string; lockedAt: number }>>({});
-  const wallCellsRef = useRef<Set<string>>(new Set());
-  // 壁を無視して進む飛行系のための、壁を含まない障害物セット
-  const obstaclesNoWallRef = useRef<Set<string>>(new Set());
-  const lastHealRef = useRef(0);
+  // 呪文・流星は「残り tick」を実時間に直して描画に渡す（見た目だけの変換）
+  const nowMs = Date.now();
+  const activeSpells = simState.activeSpells.map(s => ({
+    id: s.id, x: s.x, y: s.y, type: s.type,
+    endTime: nowMs + (s.endTick - simState.tick) * TICK_MS,
+  }));
+  const meteors = simState.meteors.map(m => ({
+    id: m.id,
+    zone: battleMap!.meteorZones![m.zoneIndex],
+    warnedAt: nowMs + (m.warnedTick - simState.tick) * TICK_MS,
+    impactAt: nowMs + (m.impactTick - simState.tick) * TICK_MS,
+    resolved: m.resolved,
+  }));
+
+  const availableTroops: Troop[] = useMemo(() => CHARACTERS.map(c => ({
+    id: c.id, name: c.forms[0].name, count: 1,
+    damage: c.base.damage, hp: c.base.hp, target: c.base.target, moveSpeed: c.base.moveSpeed,
+  })), []);
+
+  const showMessage = (text: string, ms = 2000) => {
+    setTriggerMessage(text);
+    window.setTimeout(() => setTriggerMessage(null), ms);
+  };
+
+  // ── SimEvent を見た目に変換する ──
+  const applyEvents = useCallback((events: SimEvent[]) => {
+    if (events.length === 0) return;
+    const damaged = new Set<string>();
+    const newProj: typeof projectiles = [];
+    const newFx: typeof hitFx = [];
+    const playedSfx = new Set<string>();   // 同じ音を1フレームに何度も鳴らさない
+    let message: { text: string; ms: number } | null = null;
+    const now = Date.now();
+    let seq = 0;
+
+    for (const e of events) {
+      switch (e.type) {
+        case 'PROJECTILE':
+          newProj.push({
+            id: `p-${now}-${seq++}`,
+            fromX: e.fromX, fromY: e.fromY, toX: e.toX, toY: e.toY,
+            startedAt: now, duration: e.kind === 'TESLA' ? 220 : 500, type: e.kind,
+          });
+          break;
+        case 'HIT':
+          newFx.push({
+            id: `f-${now}-${seq++}`,
+            x: e.x, y: e.y, fromX: e.fromX, fromY: e.fromY,
+            kind: e.kind, color: e.color,
+            startedAt: now, duration: e.kind === 'BOLT' ? 260 : 360,
+          });
+          break;
+        case 'DAMAGED': damaged.add(e.entityId); break;
+        case 'MESSAGE': message = { text: e.text, ms: e.durationMs }; break;
+        case 'SFX':
+          if (!playedSfx.has(e.name)) {
+            playedSfx.add(e.name);
+            (sfx as unknown as Record<string, () => void>)[e.name]?.();
+          }
+          break;
+        case 'RESULT': break;   // 勝敗は simState.result を直接見る
+      }
+    }
+
+    if (newProj.length > 0) setProjectiles(prev => [...prev, ...newProj].slice(-60));
+    if (newFx.length > 0) setHitFx(prev => [...prev, ...newFx].slice(-40));
+    setDamagedEntities(damaged);
+    if (message) showMessage(message.text, message.ms);
+  }, []);
+
+  // ── メインループ（固定タイムステップ）──
+  const pausedRef = useRef(false);
+  pausedRef.current = battlePaused || briefingOpen;
+  const rafRef = useRef<number | undefined>(undefined);
+  const lastRealRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const frame = () => {
+      if (cancelled) return;
+      const now = performance.now();
+      const dt = lastRealRef.current === 0 ? 0 : now - lastRealRef.current;
+      lastRealRef.current = now;
+
+      const r = runnerRef.current!;
+      if (!pausedRef.current && r.state.result === null) {
+        const res = r.advance(dt, providerRef.current);
+        if (res.events.length > 0) applyEvents(res.events);
+        if (res.ticks > 0) forceRender(n => (n + 1) % 1000000);
+      }
+      // 期限切れの演出を掃除する
+      const t = Date.now();
+      setProjectiles(prev => (prev.length ? prev.filter(p => t - p.startedAt < p.duration) : prev));
+      setHitFx(prev => (prev.length ? prev.filter(f => t - f.startedAt < f.duration) : prev));
+
+      rafRef.current = requestAnimationFrame(frame);
+    };
+    rafRef.current = requestAnimationFrame(frame);
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [applyEvents]);
+
+  // ポーズ解除時に、止まっていた分をまとめて進めてしまわないようにする
+  useEffect(() => {
+    if (!pausedRef.current) lastRealRef.current = 0;
+  }, [battlePaused, briefingOpen]);
+
+  // 戦闘終了時：出撃した系統にXPを付与
   const xpGrantedRef = useRef(false);
-  const [levelUps, setLevelUps] = useState<import('../../store/useArmyStore').LevelUpEvent[]>([]);
+  useEffect(() => {
+    if (!battleResult || xpGrantedRef.current) return;
+    xpGrantedRef.current = true;
+    const families = simState.players.P1.deployedFamilies;
+    if (families.length > 0) {
+      const events = grantBattleXp(families, battleResult === 'WIN');
+      if (events.length > 0) setLevelUps(events);
+    }
+  }, [battleResult]);
+
+  // ── 操作 → コマンド ──
+  //
+  // UIは状態を直接いじらない。必ずコマンドとして積み、simulateTick が処理する。
+  // PvP ではこの issue() が LockstepSession.issue() に差し替わり、
+  // 入力遅延ぶん未来の tick に予約されたうえで相手にも送られる。
+  const issue = useCallback((cmd: SimCommand) => {
+    providerRef.current.push(cmd);
+  }, []);
+
+  const handleGridClick = (x: number, y: number) => {
+    const r = runnerRef.current!;
+    if (r.state.result) return;
+
+    if (buildMode !== null) {
+      const cost = IN_BATTLE_BUILD_COSTS[buildMode] ?? 999;
+      if (Math.floor(gold) < cost) { showMessage('⚡ エナジーがたりない！', 1400); setBuildMode(null); return; }
+      if (!canDeployAt(r.state, r.statics, 'P1', x, y)) {
+        showMessage('⛔ ここには建設できない！お城の近くに置こう', 1600); setBuildMode(null); return;
+      }
+      issue({ type: 'BUILD', player: 'P1', building: buildMode, x, y });
+      setBuildMode(null);
+      return;
+    }
+
+    if (selectedSpell) {
+      if (spellCounts[selectedSpell] <= 0) return;
+      issue({ type: 'CAST_SPELL', player: 'P1', spell: selectedSpell, x, y });
+      setSelectedSpell(null);
+      return;
+    }
+
+    if (selectedOrderTroopId) {
+      if (isBlockedCell(r.state, r.statics, x, y)) return;
+      issue({ type: 'MOVE_TO', player: 'P1', entityId: selectedOrderTroopId, x, y });
+      setSelectedOrderTroopId(null);
+      return;
+    }
+
+    // 出撃
+    if (!selectedTroopId) return;
+    if (isBlockedCell(r.state, r.statics, x, y)) return;
+    if (!canDeployAt(r.state, r.statics, 'P1', x, y)) {
+      showMessage('⛔ ここには出せないよ！ お城やキャンプの近くから出そう', 1800);
+      return;
+    }
+    const line = r.cfg.unitStats.P1[selectedTroopId];
+    if (line && gold < Math.round(line.cost * r.cfg.costMult.P1)) {
+      showMessage('⚡ エナジーがたりない！ 問題を解くか、待ってためよう', 1600);
+      return;
+    }
+    issue({ type: 'DEPLOY', player: 'P1', troopId: selectedTroopId, x, y });
+  };
+
+  /** 出撃クールダウンの残り ms（表示用） */
+  const deployCooldownLeftMs = (troopId: string): number => {
+    const last = simState.players.P1.deployCd[troopId];
+    if (last === undefined) return 0;
+    const cdTicks = Math.max(1, Math.round(runner.cfg.deployCooldownMs.P1 / TICK_MS));
+    const leftTicks = cdTicks - (simState.tick - last);
+    return Math.max(0, leftTicks * TICK_MS);
+  };
 
   // Initialize cells
   const cells: { x: number; y: number }[] = [];
@@ -318,1019 +505,6 @@ export const BattleScene: React.FC<Props> = ({
       cells.push({ x, y });
     }
   }
-
-  useEffect(() => {
-    rngRef.current = new SeededRNG(Date.now()); 
-
-    const defenseEntities: BattleEntity[] = defenderBuildings.map((b, i) => {
-      const stats = BUILDING_STATS[b.type];
-      for(let dy=0; dy<stats.height; dy++) {
-        for(let dx=0; dx<stats.width; dx++) {
-          obstaclesRef.current.add(`${b.x + dx},${b.y + dy}`);
-        }
-      }
-
-      // 章ごとの難易度倍率を敵の防衛設備へ適用（⑤ 段階的な難易度設計の実体）
-      const hp = Math.round(stats.hp * difficulty.defenseHpMult);
-      const dmg = Math.round((stats.damage ?? 0) * difficulty.defenseDamageMult);
-
-      return {
-        id: `def-${i}`,
-        type: 'BUILDING',
-        subType: b.type,
-        x: b.x,
-        y: b.y,
-        hp,
-        maxHp: hp,
-        damage: dmg,
-        team: 'DEFENDER',
-        attackRange: stats.range || 0,
-        attackSpeed: stats.attackSpeed ?? 1000,
-        lastAttack: 0,
-        moveSpeed: 0,
-        targetPreference: 'ANY',
-        isHidden: b.type === BuildingType.HIDDEN_TESLA
-      };
-    });
-
-    hadEnemyBuildingsRef.current = defenseEntities.length > 0;
-
-    // 地形コストマップを構築
-    if (battleMap) {
-      terrainCostsRef.current = buildTerrainCostMap(battleMap.terrain);
-      // 通行不可地形をobstaclesに追加（溶岩は「通れるが痛い」ので障害物にはしない）
-      battleMap.terrain.forEach(tile => {
-        if (tile.type === 'WATER' || tile.type === 'ROCK') {
-          obstaclesRef.current.add(`${tile.x},${tile.y}`);
-        }
-      });
-      lavaCellsRef.current = collectLavaCells(battleMap.terrain);
-    }
-
-    // プレイヤー配置施設（ATTACKER_BUILDING）をentitiesに追加
-    const playerBuildingEntities: BattleEntity[] = playerDeployments.map(b => {
-      const stats = BUILDING_STATS[b.type];
-      return {
-        id: `player-b-${b.x}-${b.y}`,
-        type: 'BUILDING' as const,
-        subType: b.type,
-        x: b.x,
-        y: b.y,
-        hp: stats.hp,
-        maxHp: stats.hp,
-        damage: stats.damage ?? 0,
-        team: 'ATTACKER_BUILDING' as const,
-        attackRange: stats.range ?? 0,
-        attackSpeed: stats.attackSpeed ?? 1500,
-        lastAttack: 0,
-        moveSpeed: 0,
-        targetPreference: 'ANY' as const,
-      };
-    });
-
-    // 巨大生物（中立）を配置。開始時から盤面にいて、決まった経路を往復する。
-    const titanEntities: BattleEntity[] = battleMap?.titan
-      ? [makeTitanEntity(battleMap.titan, 'titan-1')]
-      : [];
-
-    setEntities([...defenseEntities, ...playerBuildingEntities, ...titanEntities]);
-    // ロスター＝出撃できる系統一覧（にゃんこ式：ゴールドを払って何度でも出せる）
-    const roster: Troop[] = CHARACTERS.map(c => ({
-      id: c.id, name: c.forms[0].name, count: 1,
-      damage: c.base.damage, hp: c.base.hp, target: c.base.target, moveSpeed: c.base.moveSpeed,
-    }));
-    setAvailableTroops(roster);
-
-    // 戦闘開始時ゴールド。章ごとの `startEnergy` を土台にバフを上乗せする。
-    // 旧実装は 0 スタート＋1⚡/秒だったため、最初のネコを出すまで30秒待たされた。
-    // 開始直後に「まず動かせる」ことは初期エンゲージメントの前提条件（⑤）。
-    let startGold = difficulty.startEnergy;
-    startGold += buffVal('GOLD_RUSH');
-    startGold += buffVal('EXTRA_TROOPS');
-    startGold += buffVal('WIZARD_SUPPORT');
-    startGold += buffVal('DRAGON_SUMMON');
-    setGold(startGold);
-    lastGoldTickRef.current = Date.now();
-  }, []);
-
-  // 戦闘終了時：出撃した系統にXPを付与し、レベルアップ/進化を集計
-  useEffect(() => {
-    if (!battleResult || xpGrantedRef.current) return;
-    xpGrantedRef.current = true;
-    const families: string[] = Array.from(deployedFamiliesRef.current);
-    if (families.length > 0) {
-      const events = grantBattleXp(families, battleResult === 'WIN');
-      if (events.length > 0) setLevelUps(events);
-    }
-  }, [battleResult]);
-
-  // 兵士エンティティを生成（図鑑の系統ベース + 進化段階 + デイリーバフ）
-  const makeAttacker = (t: Troop, px: number, py: number): BattleEntity => {
-    const fam = CHARACTER_BY_ID[t.id];
-    const stage = getStage(t.id);
-    const mult = STAGE_MULT[stage];
-
-    let spawnHp = (fam ? fam.base.hp : t.hp) * mult.hp;
-    let spawnDamage = (fam ? fam.base.damage : t.damage) * mult.dmg;
-    let spawnRange = fam ? fam.base.attackRange : 1.2;
-    let spawnSpeed = fam ? fam.base.moveSpeed : t.moveSpeed;
-    let spawnAttackSpeed = fam ? fam.base.attackSpeed : 1000;
-
-    // デイリーバフ
-    if (hasBuff('POWER_BOOST')) spawnDamage *= 1 + buffVal('POWER_BOOST') / 100;
-    if (hasBuff('ARMAGEDDON')) spawnDamage *= 1 + buffVal('ARMAGEDDON') / 100;
-    if (hasBuff('SWIFT_ARMY')) spawnSpeed *= 1 + buffVal('SWIFT_ARMY') / 100;
-    if (hasBuff('GENIUS_COMMANDER')) { const v = buffVal('GENIUS_COMMANDER') / 100; spawnDamage *= 1 + v; spawnHp *= 1 + v; }
-    if (t.id === 'barbarian' && hasBuff('RARE_BARBARIAN')) { const v = buffVal('RARE_BARBARIAN') / 100; spawnHp *= 1 + v; spawnDamage *= 1 + v; }
-    if (t.id === 'archer' && hasBuff('RARE_ARCHER')) { const v = buffVal('RARE_ARCHER') / 100; spawnRange += v * 3; spawnAttackSpeed *= 1 - v * 0.5; }
-    if (t.id === 'giant' && hasBuff('GIANT_FORTRESS')) spawnHp *= 1 + buffVal('GIANT_FORTRESS') / 100;
-
-    // 一時ランクアップ（戦闘中ゴールドで購入）：1ランクにつき HP・攻撃 +25%
-    const tr = tempRank[t.id] ?? 0;
-    if (tr > 0) { spawnHp *= 1 + 0.25 * tr; spawnDamage *= 1 + 0.25 * tr; }
-
-    return {
-      id: `atk-${Date.now()}-${rngRef.current.next()}`,
-      type: 'TROOP',
-      subType: t.id,
-      x: px,
-      y: py,
-      hp: Math.round(spawnHp),
-      maxHp: Math.round(spawnHp),
-      damage: Math.round(spawnDamage),
-      team: 'ATTACKER',
-      attackRange: spawnRange,
-      attackSpeed: Math.round(spawnAttackSpeed),
-      lastAttack: 0,
-      moveSpeed: spawnSpeed,
-      targetPreference: t.target,
-      path: [],
-    };
-  };
-
-  // Deploying troops
-  // 出撃可能エリア判定: 自陣ゾーン内、または自分の城/キャンプの周囲のみ
-  const canDeployAt = (x: number, y: number): boolean => {
-    const zone = battleMap?.playerDeployZone;
-    if (zone && x >= zone.xMin && x <= zone.xMax && y >= zone.yMin && y <= zone.yMax) return true;
-    // 城・キャンプの周囲 半径2.5
-    const R = 2.5;
-    return playerDeployments.some(b => {
-      if (b.type !== BuildingType.TOWN_HALL && b.type !== BuildingType.ARMY_CAMP) return false;
-      const s = BUILDING_STATS[b.type];
-      const cx = b.x + s.width / 2;
-      const cy = b.y + s.height / 2;
-      return Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= R + Math.max(s.width, s.height) / 2;
-    });
-  };
-
-  const spawnTroop = (x: number, y: number) => {
-    if (!selectedTroopId || battleResult) return;
-    if (obstaclesRef.current.has(`${x},${y}`)) return;
-    if (!canDeployAt(x, y)) {
-      setTriggerMessage('⛔ ここには出せないよ！ お城やキャンプの近くから出そう');
-      setTimeout(() => setTriggerMessage(null), 1800);
-      return;
-    }
-
-    const fam = CHARACTER_BY_ID[selectedTroopId];
-    if (!fam) return;
-    const cost = Math.round(fam.cost.gold * (1 - buffVal('COST_REDUCTION') / 100));
-    const cd = hasBuff('FAST_DEPLOY') ? Math.round(1500 * (1 - buffVal('FAST_DEPLOY') / 100)) : 1500;
-    const now = Date.now();
-    if (now - (deployCdRef.current[selectedTroopId] ?? 0) < cd) return; // クールダウン中
-    if (gold < cost) {
-      setTriggerMessage('⚡ エナジーがたりない！ 問題を解くか、待ってためよう');
-      setTimeout(() => setTriggerMessage(null), 1600);
-      return;
-    }
-
-    const base = availableTroops.find(t => t.id === selectedTroopId) ?? {
-      id: fam.id, name: fam.forms[0].name, count: 1,
-      damage: fam.base.damage, hp: fam.base.hp, target: fam.base.target, moveSpeed: fam.base.moveSpeed,
-    };
-    const jitterX = (rngRef.current.next() - 0.5) * 0.4;
-    const jitterY = (rngRef.current.next() - 0.5) * 0.4;
-    const spawned = makeAttacker(base, x + jitterX, y + jitterY);
-
-    setGold(g => g - cost);
-    deployCdRef.current[selectedTroopId] = now;
-    deployedFamiliesRef.current.add(selectedTroopId);
-    setEntities(prev => [...prev, spawned]);
-    setBattleStarted(true);
-    sfx.deploy();
-    forceTick(n => n + 1);
-  };
-
-  // Click on the battlefield grid: Handles spell placement, move-to orders, or troop spawn
-  const handleGridClick = (x: number, y: number) => {
-    if (battleResult) return;
-
-    // ── 戦闘中施設配置 ──
-    if (buildMode !== null) {
-      const bCost = IN_BATTLE_BUILD_COSTS[buildMode] ?? 999;
-      if (Math.floor(gold) < bCost) {
-        setTriggerMessage('⚡ エナジーがたりない！');
-        setTimeout(() => setTriggerMessage(null), 1400);
-        setBuildMode(null);
-        return;
-      }
-      if (!canDeployAt(x, y)) {
-        setTriggerMessage('⛔ ここには建設できない！お城の近くに置こう');
-        setTimeout(() => setTriggerMessage(null), 1600);
-        setBuildMode(null);
-        return;
-      }
-      // Check for overlaps with existing entities
-      const stats = BUILDING_STATS[buildMode];
-      const occupied = entities.some(e =>
-        e.type === 'BUILDING' &&
-        e.x < x + stats.width && e.x + (BUILDING_STATS[e.subType as BuildingType]?.width ?? 1) > x &&
-        e.y < y + stats.height && e.y + (BUILDING_STATS[e.subType as BuildingType]?.height ?? 1) > y
-      );
-      if (occupied) {
-        setTriggerMessage('⛔ そこには置けないよ！別の場所を選んで');
-        setTimeout(() => setTriggerMessage(null), 1600);
-        setBuildMode(null);
-        return;
-      }
-      const newBuilding: BattleEntity = {
-        id: `battle-b-${Date.now()}-${x}-${y}`,
-        type: 'BUILDING',
-        subType: buildMode,
-        x, y,
-        hp: BUILDING_STATS[buildMode].hp,
-        maxHp: BUILDING_STATS[buildMode].hp,
-        damage: BUILDING_STATS[buildMode].damage ?? 0,
-        team: 'ATTACKER_BUILDING',
-        attackRange: BUILDING_STATS[buildMode].range ?? 0,
-        attackSpeed: 1500,
-        lastAttack: 0,
-        moveSpeed: 0,
-        targetPreference: 'ANY',
-      };
-      setGold(g => g - bCost);
-      setEntities(prev => [...prev, newBuilding]);
-      sfx.tap();
-      setTriggerMessage(`🏗️ ${BUILDING_STATS[buildMode].name}を建設した！（${bCost}⚡）`);
-      setTimeout(() => setTriggerMessage(null), 1600);
-      setBuildMode(null);
-      return;
-    }
-
-    if (selectedSpell) {
-      if (spellCounts[selectedSpell] <= 0) return;
-
-      const newSpell = {
-        id: `spell-${Date.now()}`,
-        x,
-        y,
-        type: selectedSpell,
-        endTime: Date.now() + 6000
-      };
-
-      setActiveSpells(prev => [...prev, newSpell]);
-      setSpellCounts(prev => ({ ...prev, [selectedSpell]: prev[selectedSpell] - 1 }));
-      setSelectedSpell(null);
-      setBattleStarted(true);
-
-      setTriggerMessage(selectedSpell === 'HEAL' ? "💚 【回復の呪文】を発動！味方部隊のHPを持続回復します" : "💜 【レイジの呪文】を発動！味方の攻撃・移動をブースト！");
-      setTimeout(() => setTriggerMessage(null), 2500);
-      return;
-    }
-
-    // Move-to order: redirect a selected troop to clicked location
-    if (selectedOrderTroopId && !obstaclesRef.current.has(`${x},${y}`)) {
-      setEntities(prev => prev.map(e =>
-        e.id === selectedOrderTroopId
-          ? { ...e, customTarget: { x, y }, path: [], targetPreference: 'MOVE_TO' }
-          : e
-      ));
-      setSelectedOrderTroopId(null);
-      setTriggerMessage("📍 移動命令を発令！");
-      setTimeout(() => setTriggerMessage(null), 1500);
-      return;
-    }
-
-    spawnTroop(x, y);
-  };
-
-  // Main game tick function
-  const updateBattle = useCallback(() => {
-    // 戦闘一時停止中はスキップ
-    if (battlePaused) {
-      gameLoopRef.current = requestAnimationFrame(updateBattle);
-      return;
-    }
-
-    const now = Date.now();
-
-    // ── 戦闘中ゴールド：城のパッシブ湧き＋金鉱＋撃破/破壊報酬 ──
-    if (!battleResult) {
-      const since = now - lastGoldTickRef.current;
-      if (since >= 400) {
-        lastGoldTickRef.current = now;
-        let rate = difficulty.energyPerSec;               // 城の自動湧き（章ごとに設定）
-        if (hasBuff('GOLD_BOOST')) rate *= 1 + buffVal('GOLD_BOOST') / 100;
-        const inc = rate * (since / 1000) + goldKillRef.current;
-        goldKillRef.current = 0;
-        if (inc > 0) setGold(g => Math.min(9999, g + inc));
-      }
-    }
-
-    // Clean up expired projectiles / attack effects from state
-    setProjectiles(prev => prev.filter(p => now - p.startedAt < p.duration));
-    setHitFx(prev => prev.filter(f => now - f.startedAt < f.duration));
-
-    // ── 流星の予告をスケジュールする（着弾の damage 適用は setEntities の中で行う）──
-    if (battleStarted && !battleResult && battleMap?.meteorZones) {
-      let changed = false;
-      battleMap.meteorZones.forEach((z, i) => {
-        const last = lastMeteorRef.current[i] ?? now;
-        if (lastMeteorRef.current[i] === undefined) { lastMeteorRef.current[i] = now; return; }
-        if (now - last > z.intervalMs) {
-          lastMeteorRef.current[i] = now;
-          meteorsRef.current.push({
-            id: `met-${i}-${now}`, zone: z,
-            warnedAt: now, impactAt: now + z.warningMs, resolved: false,
-          });
-          changed = true;
-        }
-      });
-      // 着弾から600ms たったものは表示から消す
-      const before = meteorsRef.current.length;
-      meteorsRef.current = meteorsRef.current.filter(m => now - m.impactAt < 900);
-      if (changed || meteorsRef.current.length !== before) setMeteors([...meteorsRef.current]);
-    }
-
-    setEntities(prevEntities => {
-      const mapped = prevEntities.map(e => ({ ...e }));
-      // 撃破/破壊報酬（前フレームでHP0になった敵を集計）
-      mapped.forEach(e => {
-        if (e.hp <= 0 && e.team === 'DEFENDER') {
-          goldKillRef.current += e.type === 'BUILDING' ? 30 : 8;
-        }
-        if (e.hp <= 0 && e.type === 'BUILDING') {
-          sfx.explosion();
-          // 敵の生産施設をこわしたら、その効果をはっきり伝える。
-          // 「こわす → 増援がへる」という因果を子どもが自分で発見できるように、
-          // 何がどれだけ弱くなったのかを具体的な言葉で出す（②の学習フック）。
-          if (e.team === 'DEFENDER' && ENEMY_PRODUCTION_RATE[e.subType as BuildingType] != null) {
-            const st = BUILDING_STATS[e.subType as BuildingType];
-            const isSpawnPoint = ENEMY_SPAWN_BUILDINGS.includes(e.subType as BuildingType);
-            setTriggerMessage(isSpawnPoint
-              ? `🏭 敵の${st?.name}を破壊！ この場所から増援が出てこなくなった！`
-              : `⛏️ 敵の${st?.name}を破壊！ 敵の増援が おそくなった！`);
-            setTimeout(() => setTriggerMessage(null), 2600);
-          }
-        }
-      });
-      const nextEntities = mapped.filter(e => e.hp > 0);
-
-      // HEAL_AURA バフ：3秒ごとに自軍兵士のHPを5%回復
-      if (hasBuff('HEAL_AURA') && now - lastHealRef.current > 3000) {
-        lastHealRef.current = now;
-        nextEntities.forEach(e => {
-          if (e.team === 'ATTACKER' && e.type === 'TROOP' && e.hp > 0 && e.hp < e.maxHp) {
-            e.hp = Math.min(e.maxHp, e.hp + e.maxHp * (buffVal('HEAL_AURA') / 100));
-          }
-        });
-      }
-
-      const attackers = nextEntities.filter(e => e.team === 'ATTACKER');
-      const defenders = nextEntities.filter(e => e.team === 'DEFENDER');
-
-      // Win vs Loss evaluation
-      const minTroopCost = Math.min(...CHARACTERS.map(c => c.cost.gold));
-      if (battleStarted && attackers.length === 0 && Math.floor(gold) < minTroopCost) {
-        sfx.battleLose();
-        setBattleResult('LOSE');
-      }
-
-      // 敵の Town Hall が破壊されたら WIN
-      const enemyTownHallExists = defenders.some(
-        e => e.type === 'BUILDING' && e.subType === BuildingType.TOWN_HALL && e.hp > 0
-      );
-      // 「このステージに敵拠点が存在するか」の判定には、いま生き残っている数ではなく
-      // 開幕時に敵拠点があったかどうかを使う。生存数で見ていると、コアを最後に
-      // こわしたとき（＝全施設が同時に0になる瞬間）に勝利条件が成立せず、
-      // 攻めきったのに勝てないという状態になりうる。敵の生産施設を増やしたことで
-      // 「先に周りをつぶしてからコア」という順序が現実的になったため、ここで直す。
-      if (battleStarted && !enemyTownHallExists && hadEnemyBuildingsRef.current) {
-        sfx.battleWin();
-        setBattleResult('WIN');
-      }
-
-      // 自軍 Town Hall が破壊されたら LOSE
-      const playerTownHallDestroyed = nextEntities.some(
-        e => e.team === 'ATTACKER_BUILDING' && e.subType === BuildingType.TOWN_HALL && e.hp <= 0
-      );
-      if (battleStarted && playerTownHallDestroyed) {
-        sfx.battleLose();
-        setBattleResult('LOSE');
-      }
-
-      // Check breakthrough for Skeletons Trap spawn from Town Hall
-      const townHall = defenders.find(d => d.subType === 'TOWN_HALL');
-      if (townHall && !skeletonsSpawnedRef.current) {
-        const nearAttacker = attackers.some(a => {
-           const dist = Math.sqrt(Math.pow(a.x - townHall.x, 2) + Math.pow(a.y - townHall.y, 2));
-           return dist < 3.5;
-        });
-        if (nearAttacker) {
-           skeletonsSpawnedRef.current = true;
-           setTriggerMessage("⚠️ 警告: 敵のTownHall防衛兵（スケルトンガード）が２体覚醒し突撃してきた！");
-           setTimeout(() => setTriggerMessage(null), 3500);
-
-           const skel1: BattleEntity = {
-              id: `ske-${Date.now()}-1`,
-              type: 'TROOP',
-              subType: 'skeleton',
-              x: townHall.x,
-              y: townHall.y + 1,
-              hp: 55,
-              maxHp: 55,
-              damage: 14,
-              team: 'DEFENDER',
-              attackRange: 1.1,
-              attackSpeed: 950,
-              lastAttack: 0,
-              moveSpeed: 2.1,
-              targetPreference: 'ANY',
-              path: []
-           };
-
-           const skel2: BattleEntity = {
-              id: `ske-${Date.now()}-2`,
-              type: 'TROOP',
-              subType: 'skeleton',
-              x: townHall.x + 1,
-              y: townHall.y,
-              hp: 55,
-              maxHp: 55,
-              damage: 14,
-              team: 'DEFENDER',
-              attackRange: 1.1,
-              attackSpeed: 950,
-              lastAttack: 0,
-              moveSpeed: 2.1,
-              targetPreference: 'ANY',
-              path: []
-           };
-
-           nextEntities.push(skel1, skel2);
-        }
-      }
-
-      // --- ENEMY SPAWNER: 敵の増援ポイント経済（①） ---
-      // 旧実装は「ウェーブ間隔16〜36秒・毎回1〜4体」のバッチ湧きで、間隔が
-      // 長すぎて手ごたえがなかった。プレイヤーが「問題を解いて⚡をため、
-      // ネコを1体出す」のと同じテンポ感になるよう、敵も「ポイントがたまったら
-      // 1体出す」経済に統一した。
-      //
-      // さらに「敵は金山のぶんだけで戦力を出しているように見える」という指摘を
-      // 受けて、敵もキャンプ・兵舎を建て、そこを湧き口にするようにした。
-      //   ・増援の速さ = コアの基本値 + 生きているキャンプ/兵舎/金山の寄与
-      //   ・出現位置   = 生きているキャンプ・兵舎のとなり（複数箇所からになる）
-      //   ・兵舎が全滅すると重量級（重装ロボ・飛行ドローン）を出せなくなる
-      // つまり「先に生産施設をつぶす」という戦略が、増援の量・質・位置の
-      // すべてに効くようになる（②の「戦略の工夫で勝てる構成」の実体）。
-      if (battleStarted && battleResult === null) {
-        if (lastEnemySpawnRef.current === 0) lastEnemySpawnRef.current = now;
-
-        const defenderBldgs = nextEntities.filter(e => e.team === 'DEFENDER' && e.type === 'BUILDING' && e.hp > 0);
-        const spawnBldgs = defenderBldgs.filter(b =>
-          ENEMY_SPAWN_BUILDINGS.includes(b.subType as BuildingType));
-        const barracksAlive = defenderBldgs.some(b => b.subType === BuildingType.BARRACKS);
-        const spawnRate = enemySpawnRate(difficulty, defenderBldgs.map(b => b.subType as string));
-
-        // 兵舎が全滅したら重量級は出せない（軽量級だけの pool にフォールバック）
-        const pool = barracksAlive
-          ? difficulty.unitPool
-          : difficulty.unitPool.filter(k => !BARRACKS_ONLY_UNITS.includes(k));
-        const effectivePool = pool.length > 0 ? pool : (['grunt'] as EnemyUnitKind[]);
-
-        if (!pendingEnemyUnitRef.current || !effectivePool.includes(pendingEnemyUnitRef.current)) {
-          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(effectivePool, rngRef.current);
-        }
-        const pendingKind = pendingEnemyUnitRef.current;
-        const isFirstSpawn = enemySpawnCountRef.current === 0;
-        const intervalMs = isFirstSpawn
-          ? difficulty.firstSpawnDelayMs
-          : Math.max(1500, (ENEMY_UNIT_COST[pendingKind] / Math.max(0.1, spawnRate)) * 1000);
-
-        if (now - lastEnemySpawnRef.current > intervalMs) {
-          lastEnemySpawnRef.current = now;
-          enemySpawnCountRef.current += 1;
-          const spawnCount = enemySpawnCountRef.current;
-
-          if (defenderBldgs.length > 0) {
-            const isBossSpawn = difficulty.bossAtSpawnCount === spawnCount && !bossSpawnedRef.current;
-            if (isBossSpawn) bossSpawnedRef.current = true;
-            const kind: EnemyUnitKind = isBossSpawn ? 'boss' : pendingKind;
-
-            // 湧き口: 生きているキャンプ・兵舎のとなり。すべてこわされていたら
-            // 従来どおり敵陣のいちばん奥の列から出す（＝増援は止まらないが遅くなる）。
-            const isBlocked = (x: number, y: number) =>
-              x < 0 || x >= GRID_W || y < 0 || y >= GRID_H ||
-              obstaclesRef.current.has(`${x},${y}`) ||
-              terrainCostsRef.current.get(`${x},${y}`) === Infinity;
-
-            let spawnX: number;
-            let spawnY: number;
-            let fromLabel = '';
-            const src = spawnBldgs.length > 0
-              ? spawnBldgs[Math.floor(rngRef.current.next() * spawnBldgs.length)]
-              : null;
-
-            if (src) {
-              const st = BUILDING_STATS[src.subType as BuildingType];
-              fromLabel = st?.name ?? '';
-              // 施設の周囲を、プレイヤー側(左)を優先しながら探して空きマスに出す
-              const perimeter: { x: number; y: number }[] = [];
-              for (let dy = -1; dy <= (st?.height ?? 1); dy++) {
-                perimeter.push({ x: src.x - 1, y: src.y + dy });
-                perimeter.push({ x: src.x + (st?.width ?? 1), y: src.y + dy });
-              }
-              for (let dx = 0; dx < (st?.width ?? 1); dx++) {
-                perimeter.push({ x: src.x + dx, y: src.y - 1 });
-                perimeter.push({ x: src.x + dx, y: src.y + (st?.height ?? 1) });
-              }
-              const free = perimeter.filter(p => !isBlocked(p.x, p.y));
-              const pick = free.length > 0
-                ? free[Math.floor(rngRef.current.next() * free.length)]
-                : { x: src.x, y: src.y };
-              spawnX = pick.x;
-              spawnY = pick.y;
-            } else {
-              spawnX = Math.min(GRID_W - 1, Math.max(...defenderBldgs.map(b => b.x)) + 1);
-              const candidateYs: number[] = [];
-              for (let y = 0; y < GRID_H; y++) if (!isBlocked(spawnX, y)) candidateYs.push(y);
-              spawnY = candidateYs.length > 0
-                ? candidateYs[Math.floor(rngRef.current.next() * candidateYs.length)]
-                : Math.round(GRID_H / 2);
-            }
-
-            const s = ENEMY_UNIT_STATS[kind];
-            const hp = Math.round(s.hp * difficulty.enemyHpMult);
-            nextEntities.push({
-              id: `wave-${now}-${spawnCount}`,
-              type: 'TROOP',
-              subType: s.subType,
-              x: Math.max(0, Math.min(GRID_W - 1, spawnX + (rngRef.current.next() - 0.5) * 0.6)),
-              y: Math.max(0, Math.min(GRID_H - 1, spawnY + (rngRef.current.next() - 0.5) * 0.6)),
-              hp,
-              maxHp: hp,
-              damage: Math.round(s.damage * difficulty.enemyDamageMult),
-              team: 'DEFENDER',
-              attackRange: s.attackRange,
-              attackSpeed: s.attackSpeed,
-              lastAttack: 0,
-              moveSpeed: s.moveSpeed,
-              targetPreference: 'ANY',
-              path: [],
-            });
-
-            setTriggerMessage(isBossSpawn
-              ? `👑 ${chapter.enemyName}の親衛隊が出現！ 総力をあげて食い止めろ！`
-              : fromLabel
-                ? `⚠️ 敵の${fromLabel}から 増援（${s.label}）が出てきた！`
-                : `⚠️ 敵の増援（${s.label}）が出現！`);
-            setTimeout(() => setTriggerMessage(null), 2200);
-          }
-
-          // 次の1体を先ぎめしておく（そのコストが次回の待ち時間を決める）
-          pendingEnemyUnitRef.current = pickWeightedEnemyUnit(effectivePool, rngRef.current);
-        }
-      }
-
-      const newDamagedEntities = new Set<string>();
-
-      // ── ステージギミック ────────────────────────────────────────────
-      if (battleStarted && battleResult === null) {
-        const dt = lastFrameRef.current ? Math.min(0.1, (now - lastFrameRef.current) / 1000) : 0;
-        lastFrameRef.current = now;
-
-        // 溶岩: 乗っているキャラに継続ダメージ（敵・味方・中立すべてに等しく適用）
-        if (lavaCellsRef.current.size > 0 && now - lastLavaTickRef.current > 500) {
-          const elapsed = (now - lastLavaTickRef.current) / 1000;
-          lastLavaTickRef.current = now;
-          nextEntities.forEach(e => {
-            if (e.type !== 'TROOP' || e.hp <= 0) return;
-            if (e.subType === 'titan') return;            // ヌシは溶岩を気にしない
-            if (isFlying(e.subType)) return;              // 飛行系は溶岩の上を飛べる
-            if (isOnLava(e, lavaCellsRef.current)) {
-              e.hp -= LAVA_DPS * Math.min(1, elapsed);
-              newDamagedEntities.add(e.id);
-            }
-          });
-        }
-
-        // 流星: 着弾時刻をすぎたものに範囲ダメージ
-        for (const m of meteorsRef.current) {
-          if (m.resolved || now < m.impactAt) continue;
-          m.resolved = true;
-          sfx.explosion();
-          nextEntities.forEach(e => {
-            if (e.hp <= 0) return;
-            const d = Math.hypot(e.x - m.zone.x, e.y - m.zone.y);
-            if (d <= m.zone.radius) {
-              e.hp -= m.zone.damage;
-              newDamagedEntities.add(e.id);
-            }
-          });
-        }
-
-        // 中立エイリアン: 巣から定期的に湧く（上限あり）
-        if (battleMap?.alienNests) {
-          battleMap.alienNests.forEach((nest, i) => {
-            const last = lastAlienRef.current[i];
-            if (last === undefined) { lastAlienRef.current[i] = now; return; }
-            if (now - last <= nest.intervalMs) return;
-            lastAlienRef.current[i] = now;
-            const alive = nextEntities.filter(
-              e => e.team === 'NEUTRAL' && e.subType === ALIEN_STATS.subType && e.hp > 0
-            ).length;
-            if (alive >= nest.max * battleMap.alienNests!.length) return;
-            nextEntities.push(makeAlienEntity(nest, `alien-${i}-${now}`));
-            setTriggerMessage('👾 エイリアンが出現！ 敵も味方もおかまいなしに おそってくるぞ');
-            setTimeout(() => setTriggerMessage(null), 2600);
-          });
-        }
-
-        // 巨大生物: 決まった経路を往復する（攻撃は通常のTROOP AIが処理する）
-        if (battleMap?.titan && dt > 0) {
-          const titan = nextEntities.find(e => e.subType === 'titan' && e.hp > 0);
-          if (titan) {
-            titanDirRef.current = stepTitan(titan, battleMap.titan, titanDirRef.current, dt);
-          }
-        }
-      }
-
-      // Rebuild obstacle lookups
-      const currentObstacles = new Set<string>();
-      const noWallObstacles = new Set<string>();
-      defenders.forEach(d => {
-        if (d.type === 'BUILDING') {
-          const stats = BUILDING_STATS[d.subType as BuildingType];
-          if(stats) {
-             for(let dy=0; dy<stats.height; dy++) {
-                 for(let dx=0; dx<stats.width; dx++) {
-                     currentObstacles.add(`${d.x + dx},${d.y + dy}`);
-                     // 飛行系は壁だけを無視する（建物本体は素通りできない）
-                     if (d.subType !== BuildingType.WALL) noWallObstacles.add(`${d.x + dx},${d.y + dy}`);
-                 }
-             }
-          }
-        }
-      });
-      obstaclesRef.current = currentObstacles;
-      obstaclesNoWallRef.current = noWallObstacles;
-      // 壁は砲撃・ビームを遮る（⑥「壁を越えて撃ってくる」への対策）
-      wallCellsRef.current = collectWallCells(nextEntities);
-
-
-      // Update loops
-      nextEntities.forEach(entity => {
-        
-        // --- BUILDING ATTACKS (both DEFENDER towers and ATTACKER_BUILDING defenses) ---
-        if (entity.type === 'BUILDING') {
-           // Determine hostile targets based on this building's team
-           // 中立勢力（エイリアン・ヌシ）は、どちらの防衛施設からも攻撃対象になる
-           const hostiles = entity.team === 'ATTACKER_BUILDING'
-             ? nextEntities.filter(e => e.type === 'TROOP' && (e.team === 'DEFENDER' || e.team === 'NEUTRAL'))
-             : nextEntities.filter(e => e.team === 'ATTACKER' || (e.type === 'TROOP' && e.team === 'NEUTRAL'));
-
-           if (entity.isHidden) {
-             const enemyNearby = hostiles.some(a => {
-                const dist = Math.sqrt(Math.pow(a.x - entity.x, 2) + Math.pow(a.y - entity.y, 2));
-                return dist < (entity.attackRange || 3);
-             });
-             if (enemyNearby) entity.isHidden = false;
-             return;
-           }
-
-          if (entity.damage > 0) {
-            // ⑥ 標的選択の修正:
-            //   旧: hostiles.find(距離だけ) → 配列の先頭を撃つため、壁のむこうも撃つし
-            //       タンクで砲撃を引きつける戦術も成立しなかった。
-            //   新: 壁で遮られていない相手だけを候補にし、ヘイト値→距離の順で選ぶ。
-            const target = pickDefenseTarget(entity, hostiles, wallCellsRef.current);
-
-            // 照準時間（aimTimeMs）: 標的をとらえてから初弾までの予告。
-            // 「なぜ削られたのか」を目で追えるようにし、対処の時間をつくる。
-            const aimMs = BUILDING_STATS[entity.subType as BuildingType]?.aimTimeMs ?? 0;
-            let aimed = true;
-            if (target && aimMs > 0) {
-              const rec = aimRef.current[entity.id];
-              if (!rec || rec.targetId !== target.id) {
-                aimRef.current[entity.id] = { targetId: target.id, lockedAt: now };
-                aimed = false;
-              } else {
-                aimed = now - rec.lockedAt >= aimMs;
-              }
-            }
-            if (!target) delete aimRef.current[entity.id];
-
-            if (target && aimed && now - entity.lastAttack > entity.attackSpeed) {
-                // Record dynamic projectiles
-                const isTesla = entity.subType === BuildingType.HIDDEN_TESLA;
-                
-                const newProj = {
-                  id: `p-${Date.now()}-${Math.random()}`,
-                  fromX: entity.x + 0.5,
-                  fromY: entity.y + 0.5,
-                  toX: target.x,
-                  toY: target.y,
-                  startedAt: now,
-                  duration: isTesla ? 220 : 500,
-                  type: (isTesla ? 'TESLA' : 'CANNON') as 'TESLA' | 'CANNON'
-                };
-                setProjectiles(prev => [...prev, newProj]);
-                sfx.laserShot();
-
-                // 役割ごとの防衛施設ダメージ耐性を適用する。
-                // タンク系は砲撃を受け止める役なので大きく軽減し、高速系は打たれ弱い。
-                // HPを上げるのではなく「大砲に強い」という形にすることで役割の個性が立つ。
-                const resist = CHARACTER_BY_ID[target.subType]?.defenseResist ?? 0;
-                const dealt = Math.max(1, Math.round(entity.damage * (1 - resist)));
-                const prevHp = target.hp;
-                target.hp -= dealt;
-                if (target.hp < prevHp) newDamagedEntities.add(target.id);
-                entity.lastAttack = now;
-            }
-          }
-          return;
-        }
-
-        // --- TROOP AI (Both player attack stick figure AND defensive skeleton) ---
-        // Opposing characters filter
-        const potentialTargets = nextEntities.filter(opp => {
-          if (opp.team === entity.team) return false;
-          // 自軍施設は攻撃対象から除外（フレンドリーファイア防止）
-          if (entity.team === 'ATTACKER' && opp.team === 'ATTACKER_BUILDING') return false;
-          if (opp.isHidden) return false;
-          return true;
-        });
-        if (potentialTargets.length === 0) return;
-
-        let preferredTargets = potentialTargets;
-        if (entity.team === 'ATTACKER' && entity.targetPreference === 'DEFENSE') {
-            const defenses = potentialTargets.filter(t => t.type === 'BUILDING' && BUILDING_STATS[t.subType as BuildingType]?.damage && BUILDING_STATS[t.subType as BuildingType]?.damage! > 0);
-            if (defenses.length > 0) preferredTargets = defenses;
-        } else if (entity.team === 'ATTACKER' && entity.targetPreference === 'RUSH') {
-            // RUSH: Town Hall を最優先
-            const townHalls = potentialTargets.filter(t => t.subType === BuildingType.TOWN_HALL);
-            if (townHalls.length > 0) preferredTargets = townHalls;
-        }
-
-        let bestTarget: BattleEntity | null = null;
-        let minDist = Infinity;
-
-        preferredTargets.forEach(t => {
-            const dist = Math.sqrt(Math.pow(t.x - entity.x, 2) + Math.pow(t.y - entity.y, 2));
-            if (dist < minDist) {
-                minDist = dist;
-                bestTarget = t;
-            }
-        });
-
-        if (!bestTarget) {
-           minDist = Infinity;
-           potentialTargets.forEach(t => {
-              const dist = Math.sqrt(Math.pow(t.x - entity.x, 2) + Math.pow(t.y - entity.y, 2));
-              if (dist < minDist) {
-                 minDist = dist;
-                 bestTarget = t;
-              }
-           });
-        }
-
-        if (bestTarget) {
-            // Apply Spells logic
-            let currentAttackSpeed = entity.attackSpeed;
-            let currentMoveSpeed = entity.moveSpeed;
-            let currentDamage = entity.damage;
-
-            // Check Rage
-            const isRaged = activeSpells.some(spell => {
-              if (spell.type !== 'RAGE' || now > spell.endTime) return false;
-              const spellDist = Math.sqrt(Math.pow(spell.x - entity.x, 2) + Math.pow(spell.y - entity.y, 2));
-              return spellDist <= 2.8; 
-            });
-
-            if (isRaged) {
-              currentAttackSpeed = entity.attackSpeed * 0.5; // attack 2x faster (halved wait)
-              currentMoveSpeed = entity.moveSpeed * 1.6;
-              currentDamage = entity.damage * 1.5;
-            }
-
-            // Check Heal (Regen)
-            const isHealed = activeSpells.some(spell => {
-              if (spell.type !== 'HEAL' || now > spell.endTime) return false;
-              const spellDist = Math.sqrt(Math.pow(spell.x - entity.x, 2) + Math.pow(spell.y - entity.y, 2));
-              return spellDist <= 2.8;
-            });
-            if (isHealed && entity.hp < entity.maxHp) {
-              entity.hp = Math.min(entity.maxHp, entity.hp + 0.3); // tick heal
-            }
-
-            // Target dimensions
-            const targetIsBuilding = bestTarget.type === 'BUILDING';
-            const targetW = targetIsBuilding ? (BUILDING_STATS[bestTarget.subType as BuildingType]?.width || 1) : 0.6;
-            const targetH = targetIsBuilding ? (BUILDING_STATS[bestTarget.subType as BuildingType]?.height || 1) : 0.6;
-
-            // 施設は「中心」ではなく「いちばん近いふち」までの距離で交戦判定する。
-            // こうしないと大きな建物では中心に届くまで建物の上に乗り上げて
-            // “施設に引っかかる”状態になってしまう。
-            let distToTarget: number;
-            if (targetIsBuilding) {
-              // 建物の占有マス x..x+W-1, y..y+H-1 のうち最も近い点までの距離
-              const nearX = Math.max(bestTarget.x, Math.min(entity.x, bestTarget.x + targetW - 1));
-              const nearY = Math.max(bestTarget.y, Math.min(entity.y, bestTarget.y + targetH - 1));
-              distToTarget = Math.sqrt(Math.pow(nearX - entity.x, 2) + Math.pow(nearY - entity.y, 2));
-            } else {
-              const targetCenterX = bestTarget.x + targetW / 2 - 0.5;
-              const targetCenterY = bestTarget.y + targetH / 2 - 0.5;
-              distToTarget = Math.sqrt(Math.pow(targetCenterX - entity.x, 2) + Math.pow(targetCenterY - entity.y, 2));
-            }
-
-            // 遠距離ユニットも壁ごしには撃てない（防衛施設と同じルール）。
-            // 近接(射程2未満)と飛行系は、この制限を受けない。
-            const canSeeTarget =
-              entity.attackRange < 2 ||
-              isFlying(entity.subType) ||
-              bestTarget!.subType === BuildingType.WALL ||
-              hasLineOfSight(entity.x + 0.5, entity.y + 0.5, bestTarget!.x + 0.5, bestTarget!.y + 0.5, wallCellsRef.current);
-
-            if (distToTarget <= entity.attackRange && canSeeTarget) {
-                if (now - entity.lastAttack > currentAttackSpeed) {
-                    const prevHp = bestTarget.hp;
-                    bestTarget.hp -= currentDamage;
-                    if (bestTarget.hp < prevHp) newDamagedEntities.add(bestTarget.id);
-                    entity.lastAttack = now;
-                    sfx.hit();
-                    // 攻撃タイプ別エフェクトを発生（遠距離=BOLT, 巨人/ボス=SHOCK, それ以外=斬撃）
-                    const sub = entity.subType as string;
-                    const isRanged = entity.attackRange >= 2;
-                    const isHeavy = sub.startsWith('boss') || sub === 'giant';
-                    const kind: 'SLASH' | 'BOLT' | 'SHOCK' = isRanged ? 'BOLT' : isHeavy ? 'SHOCK' : 'SLASH';
-                    const color = isRanged
-                      ? (sub.includes('wizard') || sub.includes('mage') ? '#c084fc' : '#67e8f9')
-                      : isHeavy ? '#fb923c' : '#fde68a';
-                    const fxId = `fx-${now}-${rngRef.current.next()}`;
-                    setHitFx(prev => (prev.length > 40 ? prev.slice(-40) : prev).concat({
-                      id: fxId,
-                      x: bestTarget.x, y: bestTarget.y,
-                      fromX: entity.x, fromY: entity.y,
-                      kind, color,
-                      startedAt: now, duration: kind === 'BOLT' ? 260 : 360,
-                    }));
-                }
-                entity.path = [];
-            }
-            else if (entity.targetPreference === 'HOLD') {
-                // HOLD命令: 移動しない、攻撃のみ継続
-                entity.path = [];
-            }
-            else {
-                // MOVE_TO命令(指定座標へ移動)と通常の戦闘移動(bestTargetへ接近)を
-                // それぞれの方法で経路(entity.path)だけ決め、実際にその経路にそって
-                // 進める「Vectors apply stepper」はこの後で共通化して1回だけ行う。
-                // 以前は MOVE_TO 側だけ経路を計算した直後に return してしまい、
-                // stepper に一度も到達できず「経路は決まるのに一歩も動かない」
-                // 不具合になっていた(④のバグ報告の原因)。
-                if (entity.targetPreference === 'MOVE_TO' && entity.customTarget) {
-                    // MOVE_TO命令: 指定座標へ移動、到達後に通常戦闘復帰
-                    const ct = entity.customTarget;
-                    const distToCustom = Math.sqrt(Math.pow(ct.x - entity.x, 2) + Math.pow(ct.y - entity.y, 2));
-                    if (distToCustom < 0.8) {
-                        entity.customTarget = undefined;
-                        entity.targetPreference = 'ANY';
-                        entity.path = [];
-                    } else if (!entity.path || entity.path.length === 0) {
-                        const path = findPathWithTerrain(
-                            { x: entity.x, y: entity.y },
-                            ct,
-                            obstaclesRef.current,
-                            terrainCostsRef.current
-                        );
-                        if (path && path.length > 0) {
-                            entity.path = path;
-                        } else {
-                            // 経路が見つからない場合だけ直線でにじり寄る(壁の直前などのフォールバック)
-                            const dx = ct.x - entity.x;
-                            const dy = ct.y - entity.y;
-                            const angle = Math.atan2(dy, dx);
-                            entity.x += Math.cos(angle) * (entity.moveSpeed * 0.010);
-                            entity.y += Math.sin(angle) * (entity.moveSpeed * 0.010);
-                        }
-                    }
-                } else {
-                    // Move towards nearest coordinate
-                    if (!entity.path || entity.path.length === 0) {
-                         // 飛行系は壁を無視して直進できる（その代わり壁のかげにも隠れられない）
-                         const obstacles = isFlying(entity.subType)
-                           ? obstaclesNoWallRef.current
-                           : obstaclesRef.current;
-                         const path = findPathWithTerrain(
-                             {x: entity.x, y: entity.y},
-                             {x: bestTarget.x, y: bestTarget.y},
-                             obstacles,
-                             terrainCostsRef.current
-                         );
-
-                         if (path && path.length > 0) {
-                             entity.path = path;
-                         } else {
-                             // Line pathing / break obstruction walls
-                             const dx = bestTarget.x - entity.x;
-                             const dy = bestTarget.y - entity.y;
-                             const angle = Math.atan2(dy, dx);
-                             entity.x += Math.cos(angle) * (currentMoveSpeed * 0.010);
-                             entity.y += Math.sin(angle) * (currentMoveSpeed * 0.010);
-
-                             const wallCol = defenders.find(d =>
-                                 d.subType === 'WALL' &&
-                                 Math.abs(d.x - entity.x) < 0.8 &&
-                                 Math.abs(d.y - entity.y) < 0.8
-                              );
-                              if (wallCol && now - entity.lastAttack > currentAttackSpeed) {
-                                  const prevHp = wallCol.hp;
-                                  wallCol.hp -= currentDamage;
-                                  if (wallCol.hp < prevHp) newDamagedEntities.add(wallCol.id);
-                                  entity.lastAttack = now;
-                                  sfx.hit();
-                              }
-                              return;
-                         }
-                    }
-                }
-
-                // Vectors apply stepper（MOVE_TO・通常移動で共通）
-                let moveX = 0, moveY = 0;
-                if (entity.path && entity.path.length > 0) {
-                    const nextNode = entity.path[0];
-                    const dx = nextNode.x - entity.x;
-                    const dy = nextNode.y - entity.y;
-                    const distToNode = Math.sqrt(dx * dx + dy * dy);
-                    const moveStep = currentMoveSpeed * 0.013;
-
-                    if (distToNode < moveStep) {
-                        entity.x = nextNode.x;
-                        entity.y = nextNode.y;
-                        entity.path.shift();
-                    } else {
-                        moveX = (dx / distToNode) * moveStep;
-                        moveY = (dy / distToNode) * moveStep;
-                    }
-                }
-
-                // Friendly collision spacing (flocking algorithm separation)
-                let sepX = 0, sepY = 0;
-                const separationRadius = 0.55;
-                const separationForce = 0.035;
-                const neighbors = nextEntities.filter(other =>
-                    other.id !== entity.id &&
-                    other.type === 'TROOP' &&
-                    Math.abs(other.x - entity.x) < separationRadius &&
-                    Math.abs(other.y - entity.y) < separationRadius
-                );
-
-                neighbors.forEach(n => {
-                    const dx = entity.x - n.x;
-                    const dy = entity.y - n.y;
-                    const distSq = dx*dx + dy*dy;
-                    if (distSq > 0 && distSq < separationRadius * separationRadius) {
-                         const dist = Math.sqrt(distSq);
-                         sepX += (dx / dist) / dist;
-                         sepY += (dy / dist) / dist;
-                    }
-                });
-
-                entity.x += moveX + (sepX * separationForce);
-                entity.y += moveY + (sepY * separationForce);
-            }
-        }
-      });
-      
-      setDamagedEntities(newDamagedEntities);
-      return nextEntities;
-    });
-
-    gameLoopRef.current = requestAnimationFrame(updateBattle);
-  }, [battleStarted, availableTroops, battleResult, activeSpells, battlePaused, difficulty, chapter]);
-
-  useEffect(() => {
-    if (battleResult) {
-      if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
-    } else {
-      gameLoopRef.current = requestAnimationFrame(updateBattle);
-    }
-    return () => {
-      if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
-    };
-  }, [updateBattle, battleResult]);
 
   const isCharUnlocked = (id: string): boolean => {
     const fam = CHARACTER_BY_ID[id];
@@ -1989,13 +1163,9 @@ export const BattleScene: React.FC<Props> = ({
                                   <button
                                     key={order}
                                     onClick={() => {
-                                      setEntities(prev =>
-                                        prev.map(en =>
-                                          en.id === selectedOrderTroopId
-                                            ? { ...en, targetPreference: order === 'DEFENSE' ? 'DEFENSE' : order }
-                                            : en
-                                        )
-                                      );
+                                      if (selectedOrderTroopId) {
+                                        issue({ type: 'SET_ORDER', player: 'P1', entityId: selectedOrderTroopId, order });
+                                      }
                                       setSelectedOrderTroopId(null);
                                     }}
                                     className="px-2 py-1 text-[10px] font-black rounded-lg text-white"
@@ -2150,14 +1320,14 @@ export const BattleScene: React.FC<Props> = ({
 
            {/* 補充（旧・独立した行を、この行のチップに統合してバーの高さを削った） */}
            <button
-             onClick={() => { if (gold >= 60) { setGold(g => g - 60); setSpellCounts(s => ({ ...s, HEAL: s.HEAL + 1 })); } }}
+             onClick={() => issue({ type: 'BUY_SPELL', player: 'P1', spell: 'HEAL' })}
              disabled={gold < 60}
              className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee] disabled:opacity-30 whitespace-nowrap"
            >
              ＋💊60⚡
            </button>
            <button
-             onClick={() => { if (gold >= 80) { setGold(g => g - 80); setSpellCounts(s => ({ ...s, RAGE: s.RAGE + 1 })); } }}
+             onClick={() => issue({ type: 'BUY_SPELL', player: 'P1', spell: 'RAGE' })}
              disabled={gold < 80}
              className="px-2 py-1.5 text-[10px] font-bold rounded-lg border border-[#fb923c]/40 bg-[#fb923c]/10 text-[#fb923c] disabled:opacity-30 whitespace-nowrap"
            >
@@ -2207,8 +1377,10 @@ export const BattleScene: React.FC<Props> = ({
                const tr = tempRank[troop.id] ?? 0;
                const formName = fam ? fam.forms[baseStage - 1].name : troop.name;
                const sprite = troopSpriteUrl(troop.id, baseStage) ?? `/assets/sprites/${troop.id}.png`;
-               const cost = fam ? Math.round(fam.cost.gold * (1 - buffVal('COST_REDUCTION') / 100)) : 0;
-               const cdLeft = Math.max(0, (deployCdRef.current[troop.id] ?? 0) + (hasBuff('FAST_DEPLOY') ? Math.round(1500 * (1 - buffVal('FAST_DEPLOY') / 100)) : 1500) - Date.now());
+               // コスト・クールダウンはシミュレーションが持つ確定値から引く
+               // （UIで再計算するとシミュレーションとズレて「押せるのに出ない」が起きる）
+               const cost = Math.round((runner.cfg.unitStats.P1[troop.id]?.cost ?? 0) * runner.cfg.costMult.P1);
+               const cdLeft = deployCooldownLeftMs(troop.id);
                const affordable = Math.floor(gold) >= cost && cdLeft <= 0;
                return (
                   <button
@@ -2263,14 +1435,13 @@ export const BattleScene: React.FC<Props> = ({
             {selectedTroopId && (() => {
               const fam = CHARACTER_BY_ID[selectedTroopId];
               if (!fam) return null;
-              const rankCost = Math.round(fam.cost.gold * 3);
+              const rankCost = Math.round((runner.cfg.unitStats.P1[selectedTroopId]?.cost ?? fam.cost.gold) * 3);
               const can = Math.floor(gold) >= rankCost;
               return (
                 <button
                   onClick={() => {
                     if (Math.floor(gold) < rankCost) return;
-                    setGold(g => g - rankCost);
-                    setTempRank(r => ({ ...r, [selectedTroopId]: (r[selectedTroopId] ?? 0) + 1 }));
+                    issue({ type: 'BUY_RANK', player: 'P1', troopId: selectedTroopId });
                     sfx.correct();
                   }}
                   disabled={!can}
@@ -2295,7 +1466,7 @@ export const BattleScene: React.FC<Props> = ({
          <InBattleQuiz
            subtopics={quizSubtopics}
            baseReward={34}
-           onReward={(en) => setGold(g => Math.min(9999, g + en))}
+           onReward={(en) => issue({ type: 'GRANT_ENERGY', player: 'P1', amount: en })}
            onClose={() => { setQuizOpen(false); setBattlePaused(false); }}
          />
        )}

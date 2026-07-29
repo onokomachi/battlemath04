@@ -478,3 +478,81 @@ Clash of Clans が採用している方式で、**「友だちの陣地を攻略
 - Fiedler, G. *Fix Your Timestep!* — 固定タイムステップと描画補間の定番解説
 - ECMAScript 仕様 `Math` 節 — `sqrt` は正しく丸められ、`sin`/`cos`/`pow` 等は
   実装依存の近似であることの根拠
+
+---
+
+# 実装状況（本リポジトリ）
+
+上記の設計指針にもとづき、**段階1〜7をすべて実装ずみ**。
+
+## 追加されたファイル
+
+| ファイル | 役割 |
+|---|---|
+| `catwars/sim/rng.ts` | mulberry32。整数演算のみなので全エンジンでビット単位一致 |
+| `catwars/sim/math.ts` | `pow`/`hypot`/`atan2`/`cos`/`sin` を排した距離・正規化 |
+| `catwars/sim/pathfind.ts` | 全順序 (f,h,y,x) の二分ヒープA*。g値更新も修正し最短を返す |
+| `catwars/sim/types.ts` | `SimState` / `SimCommand` / `SimEvent` / `SimConfig` |
+| `catwars/sim/simulate.ts` | `simulateTick()`。戦闘ロジック本体（React非依存の純粋関数） |
+| `catwars/sim/setup.ts` | 進化段階・バフを試合開始時に解決して `SimConfig` へ焼き込む |
+| `catwars/sim/checksum.ts` | ID順ソート＋量子化 FNV-1a、デシンク時のダンプ |
+| `catwars/sim/runner.ts` | 20Hz固定タイムステップのアキュムレータ駆動 |
+| `catwars/net/transport.ts` | トランスポート抽象＋テスト用インメモリ実装 |
+| `catwars/net/lockstep.ts` | 入力遅延・tickバリア・デシンク検出・スタール検知 |
+| `catwars/net/firebaseTransport.ts` | RTDBによるバケット配送、サーバー確定seed |
+| `scripts/simTest.ts` | 決定論テスト一式（`npm run test:sim`） |
+
+## 設計上の要点
+
+- **同期するのはコマンドのみ**。座標・HPは一切送らない。
+- **PvE と PvP は同じコードを通る**。違いは「P2の行動をAIが決めるか、
+  ネットワーク越しのコマンドが決めるか」だけ（`SimConfig.mode`）。
+  結果として、ソロプレイもリプレイ・自動テストの対象になる。
+- **入力遅延 > バケット長 + 片道遅延** が成立条件。
+  `recommendedInputDelayTicks()` がこの不等式から値を出す。
+- 進化段階やデイリーバフは端末ごとに違うので、**試合開始時に解決して
+  `SimConfig` に焼き込む**。シミュレーション中にストアを参照しない。
+- 演出（弾道・ヒットエフェクト・メッセージ・音）は `SimEvent` として
+  分離。演出を変えてもシミュレーションの一致性は壊れない。
+
+## 直った既存バグ
+
+固定タイムステップ化にともない、**単体プレイに存在していた実バグ**も解消した。
+
+- 旧実装は `requestAnimationFrame` ごとに1回進め、移動量を
+  `moveSpeed * 0.013`（＝1フレームあたり）で加算していた。
+  このため **120Hz の端末では 60Hz の端末のちょうど2倍の速さ**で
+  ゲームが進んでいた。現在は実時間で `1tick = 50ms` に固定されており、
+  フレームレートが変わっても進行は変わらない（テスト[2]で検証）。
+- A* が「オープンリスト内しか探さず、より短い経路を見つけても
+  優先度キューを更新しない」実装だったため、最短でない経路を返すことが
+  あった。`gScore` マップで管理する正しい実装に修正した。
+
+## テスト（`npm run test:sim`）
+
+| # | 内容 | 結果 |
+|---|---|---|
+| 1 | 同一seed＋同一コマンド列で全2400tickのチェックサムが一致 | ✅ |
+| 1 | seedを変えると結果が変わる（テスト自体の妥当性） | ✅ |
+| 2 | 60fps と 120fps で同じtickに到達し状態も一致 | ✅ |
+| 2 | 5〜120msの不規則なフレーム刻みでも一致 | ✅ |
+| 3 | 2インスタンスのロックステップが全600tickで一致 | ✅ |
+| 3 | RTT 300ms相当（推奨入力遅延8tick）でも同期 | ✅ |
+| 4 | 注入したズレ（HP -0.5）をチェックサムが検出 | ✅ |
+| 5 | `catwars/sim/` に実装依存の数学関数が無いことを静的検査 | ✅ |
+
+## 残っていること（PvPを実際に遊べるようにするには）
+
+シミュレーションと通信層は完成しているが、**対戦導線のUIは未実装**。
+必要なのは以下で、いずれも既存の仕組みの組み合わせで足りる。
+
+1. `.env.local` に `VITE_FIREBASE_DATABASE_URL` を設定し、Firebase コンソールで
+   Realtime Database を有効化する（未設定ならソロプレイのみで動作する）。
+2. CAT-WARS のハブに「たいせん」導線を追加し、既存の Firestore ルーム管理
+   （`hooks/usePvpConnection.ts`）でマッチングする。
+3. マッチ成立時に `createMatchMeta()` で seed と両者の `PlayerSetup`・陣地を確定し、
+   両クライアントが同一の `SimConfig` を作る。
+4. `BattleScene` の `providerRef`（現在は `LocalCommandProvider`）を
+   `LockstepSession` に差し替え、毎フレーム `flush()` と `recordChecksum()` を呼ぶ。
+5. `LockstepStatus` が `WAITING` / `DESYNC` / `DROPPED` のときの表示を出す
+   （小学生向けなので「あいてを まっています…」のような明示が必須）。
