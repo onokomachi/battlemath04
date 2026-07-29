@@ -59,6 +59,40 @@ export const ENEMY_UNIT_STATS: Record<EnemyUnitKind, {
   boss:    { subType: 'boss_overlord', label: '皇帝の親衛隊', hp: 700, damage: 45, attackRange: 1.8, attackSpeed: 2400, moveSpeed: 0.9 },
 };
 
+// ── 敵の増援ポイント経済 ─────────────────────────────────────────────
+//
+// ①のフィードバック対応: 旧実装は「ウェーブ間隔16〜36秒・1回1〜4体」の
+// バッチ湧きで、間隔が長すぎて手ごたえがなかった。プレイヤーが「問題を解いて
+// ⚡をため、ネコを1体出す」のと同じテンポで、敵も「ポイントがたまったら
+// 1体出す」経済に統一する（敵に実際に問題を解かせる必要はない）。
+// ここでの「コスト」は各キャラの強さに応じた重み。ChapterDifficulty の
+// enemySpawnRatePerSec（毎秒たまるポイント）で割った値が、そのキャラの
+// 実質的な出現間隔になる。値が大きいキャラほど出にくく、狙って通り道に
+// 送りこまれる感じを減らして「時々つよいのが混ざる」自然な出現にしている。
+export const ENEMY_UNIT_COST: Record<EnemyUnitKind, number> = {
+  grunt: 38,
+  shooter: 44,
+  runner: 34,
+  brute: 105,
+  flyer: 68,
+  boss: 500, // ボスは経済に乗せず bossAtSpawnCount で単発トリガーする
+};
+
+/** unitPool から、コストの軽いキャラほど出やすい重みでランダムに1体選ぶ */
+export function pickWeightedEnemyUnit(
+  pool: EnemyUnitKind[],
+  rng: { next: () => number },
+): EnemyUnitKind {
+  const weights = pool.map(k => 1 / ENEMY_UNIT_COST[k]);
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = rng.next() * total;
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
+}
+
 export interface ChapterDifficulty {
   /** 敵ウェーブ兵のHP倍率 */
   enemyHpMult: number;
@@ -68,18 +102,14 @@ export interface ChapterDifficulty {
   defenseDamageMult: number;
   /** 敵の防衛施設のHP倍率 */
   defenseHpMult: number;
-  /** 最初のウェーブまでの猶予(ms)。序盤ほど長く取り、まず攻める体験を保証する */
-  firstWaveDelayMs: number;
-  /** ウェーブ間隔(ms) */
-  waveIntervalMs: number;
-  /** 1ウェーブの体数（最初） */
-  waveSize: number;
-  /** 1ウェーブの体数（上限。ウェーブが進むと増える） */
-  waveSizeMax: number;
-  /** この章に出てくる敵の種類 */
+  /** 最初の増援が出るまでの猶予(ms)。序盤ほど長く取り、まず攻める体験を保証する */
+  firstSpawnDelayMs: number;
+  /** 敵の増援ポイントがたまる速さ（毎秒）。ENEMY_UNIT_COST を割った値が実質の出現間隔になる */
+  enemySpawnRatePerSec: number;
+  /** この章に出てくる敵の種類（コストが軽いほど出やすい） */
   unitPool: EnemyUnitKind[];
-  /** このウェーブ番号でボスが1体だけ出現する（未設定ならボスなし） */
-  bossAtWave?: number;
+  /** 通常湧きが何体め(0起算)でボスが1体だけ割りこんでくるか（未設定ならボスなし） */
+  bossAtSpawnCount?: number;
   /** 戦闘開始時に持っている⚡ */
   startEnergy: number;
   /** ⚡の自然回復（毎秒） */
@@ -124,8 +154,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.7, enemyDamageMult: 0.6,
       defenseDamageMult: 0.6, defenseHpMult: 0.7,
-      firstWaveDelayMs: 45000, waveIntervalMs: 36000,
-      waveSize: 1, waveSizeMax: 1, unitPool: ['grunt'],
+      firstSpawnDelayMs: 11000, enemySpawnRatePerSec: 4.0,
+      unitPool: ['grunt'],
       startEnergy: 260, energyPerSec: 1.6,
     },
     rewardCredits: 300,
@@ -144,8 +174,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.8, enemyDamageMult: 0.7,
       defenseDamageMult: 0.7, defenseHpMult: 0.8,
-      firstWaveDelayMs: 40000, waveIntervalMs: 32000,
-      waveSize: 1, waveSizeMax: 2, unitPool: ['grunt', 'shooter'],
+      firstSpawnDelayMs: 10000, enemySpawnRatePerSec: 4.6,
+      unitPool: ['grunt', 'shooter'],
       startEnergy: 240, energyPerSec: 1.5,
     },
     rewardCredits: 380,
@@ -164,8 +194,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.9, enemyDamageMult: 0.85,
       defenseDamageMult: 0.8, defenseHpMult: 0.9,
-      firstWaveDelayMs: 35000, waveIntervalMs: 28000,
-      waveSize: 2, waveSizeMax: 2, unitPool: ['grunt', 'shooter'],
+      firstSpawnDelayMs: 9000, enemySpawnRatePerSec: 5.2,
+      unitPool: ['grunt', 'shooter'],
       startEnergy: 220, energyPerSec: 1.4,
     },
     rewardCredits: 460,
@@ -184,8 +214,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.0, enemyDamageMult: 0.95,
       defenseDamageMult: 0.9, defenseHpMult: 1.0,
-      firstWaveDelayMs: 32000, waveIntervalMs: 25000,
-      waveSize: 2, waveSizeMax: 3, unitPool: ['grunt', 'shooter', 'runner'],
+      firstSpawnDelayMs: 8500, enemySpawnRatePerSec: 5.8,
+      unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 200, energyPerSec: 1.3,
     },
     rewardCredits: 550,
@@ -204,8 +234,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.05, enemyDamageMult: 1.0,
       defenseDamageMult: 1.0, defenseHpMult: 1.05,
-      firstWaveDelayMs: 30000, waveIntervalMs: 22000,
-      waveSize: 2, waveSizeMax: 3, unitPool: ['grunt', 'shooter', 'runner'],
+      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 6.4,
+      unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 190, energyPerSec: 1.25,
     },
     rewardCredits: 650,
@@ -224,8 +254,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.1, enemyDamageMult: 1.05,
       defenseDamageMult: 1.1, defenseHpMult: 1.1,
-      firstWaveDelayMs: 28000, waveIntervalMs: 20000,
-      waveSize: 3, waveSizeMax: 3, unitPool: ['grunt', 'shooter', 'brute'],
+      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 7.0,
+      unitPool: ['grunt', 'shooter', 'brute'],
       startEnergy: 180, energyPerSec: 1.2,
     },
     rewardCredits: 780,
@@ -244,8 +274,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.2, enemyDamageMult: 1.15,
       defenseDamageMult: 1.2, defenseHpMult: 1.15,
-      firstWaveDelayMs: 26000, waveIntervalMs: 18000,
-      waveSize: 3, waveSizeMax: 4, unitPool: ['grunt', 'shooter', 'runner', 'flyer'],
+      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 7.6,
+      unitPool: ['grunt', 'shooter', 'runner', 'flyer'],
       startEnergy: 170, energyPerSec: 1.15,
     },
     rewardCredits: 920,
@@ -264,9 +294,9 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.3, enemyDamageMult: 1.2,
       defenseDamageMult: 1.3, defenseHpMult: 1.25,
-      firstWaveDelayMs: 24000, waveIntervalMs: 16000,
-      waveSize: 3, waveSizeMax: 4, unitPool: ['grunt', 'shooter', 'brute', 'flyer'],
-      bossAtWave: 4,
+      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 8.5,
+      unitPool: ['grunt', 'shooter', 'brute', 'flyer'],
+      bossAtSpawnCount: 9,
       startEnergy: 180, energyPerSec: 1.2,
     },
     rewardCredits: 1200,
@@ -320,8 +350,9 @@ export function effectiveDifficulty(ch: CampaignChapter, assist: 0 | 1 | 2): Cha
     ...d,
     enemyDamageMult: d.enemyDamageMult * a.damageMult,
     defenseDamageMult: d.defenseDamageMult * a.damageMult,
-    firstWaveDelayMs: Math.round(d.firstWaveDelayMs * a.waveIntervalMult),
-    waveIntervalMs: Math.round(d.waveIntervalMs * a.waveIntervalMult),
+    firstSpawnDelayMs: Math.round(d.firstSpawnDelayMs * a.waveIntervalMult),
+    // waveIntervalMult が大きいほど「敵が来にくい」= ポイントがたまる速さを落とす
+    enemySpawnRatePerSec: d.enemySpawnRatePerSec / a.waveIntervalMult,
     startEnergy: d.startEnergy + a.bonusEnergy,
   };
 }
