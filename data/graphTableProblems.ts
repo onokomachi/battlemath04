@@ -25,12 +25,14 @@ const tempLabels = ['午前9', '10', '11', '午後0', '1', '2', '3', '4', '5'];
 const tempA = [16, 17, 18, 20, 22, 24, 23, 19, 17];
 const tempGraphA = lineGraphSvg({
   title: '1日の気温の変わり方', xLabels: tempLabels, values: tempA,
-  yMin: 15, yMax: 25, yStep: 5, yUnit: '(度)', xUnit: '(時)', brokenAxis: true,
+  // yStep=5 の目盛り線上に無い値(17度・18度・23度など)を問うため、
+  // 1度きざみの補助目盛りを追加して正確に読み取れるようにする。
+  yMin: 15, yMax: 25, yStep: 5, yMinorStep: 1, yUnit: '(度)', xUnit: '(時)', brokenAxis: true,
 });
 const tempB = [13, 15, 18, 21, 22, 21, 18, 16, 14];
 const tempGraphB = lineGraphSvg({
   title: 'ある日の気温の変わり方', xLabels: tempLabels, values: tempB,
-  yMin: 10, yMax: 25, yStep: 5, yUnit: '(度)', xUnit: '(時)', brokenAxis: true,
+  yMin: 10, yMax: 25, yStep: 5, yMinorStep: 1, yUnit: '(度)', xUnit: '(時)', brokenAxis: true,
 });
 
 // ---- 追加の折れ線グラフ(よみとり拡充用) ----
@@ -38,13 +40,14 @@ const rainLabels = ['1週', '2週', '3週', '4週', '5週'];
 const rainValues = [35, 60, 25, 80, 45];
 const rainGraph = lineGraphSvg({
   title: '5月の週ごとの降水量', xLabels: rainLabels, values: rainValues,
-  yMin: 0, yMax: 90, yStep: 15, yUnit: '(mm)', xUnit: '(週)',
+  // 値(35・25・80・45mm)はすべて5の倍数なので、5mmきざみの補助目盛りで足りる。
+  yMin: 0, yMax: 90, yStep: 15, yMinorStep: 5, yUnit: '(mm)', xUnit: '(週)',
 });
 const heightLabels = ['1日目', '8日目', '15日目', '22日目', '29日目', '36日目'];
 const heightValues = [3, 7, 12, 19, 27, 33];
 const heightGraph = lineGraphSvg({
   title: 'ひまわりの高さの変わり方', xLabels: heightLabels, values: heightValues,
-  yMin: 0, yMax: 35, yStep: 5, yUnit: '(cm)',
+  yMin: 0, yMax: 35, yStep: 5, yMinorStep: 1, yUnit: '(cm)',
 });
 
 const oresenYomitori: Problem[] = [

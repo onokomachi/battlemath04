@@ -34,6 +34,13 @@ export interface LineGraphOptions {
   brokenAxis?: boolean;
   /** 強調する点のインデックス */
   highlightIndex?: number;
+  /**
+   * 補助目盛りの間隔(数値ラベルなし・細線)。yStep より細かい値を渡すと、
+   * yStep間に補助線を引く。「よみとり」問題で、yStepの目盛り線上に無い値
+   * (例: yStep=5でも17度・23度を問う)を、目もりを数えて正確に読めるようにする。
+   * 省略時は yStep と同じ(=補助線なし。従来どおり)。
+   */
+  yMinorStep?: number;
 }
 
 export const lineGraphSvg = (o: LineGraphOptions): string => {
@@ -53,7 +60,19 @@ export const lineGraphSvg = (o: LineGraphOptions): string => {
 
   el.push(`<text x="${W / 2}" y="18" fill="${LABEL}" font-size="14" text-anchor="middle" font-weight="bold">${esc(o.title)}</text>`);
 
-  // 目盛り・グリッド
+  // 補助目盛り(数値ラベルなし・細くうすい線)。主目盛りの間を実際に数えて
+  // 正確な値を読み取れるようにする(主目盛りの上に無い値を問う設問への対応)。
+  const minorStep = o.yMinorStep && o.yMinorStep > 0 && o.yMinorStep < o.yStep ? o.yMinorStep : 0;
+  if (minorStep > 0) {
+    for (let v = o.yMin; v <= o.yMax + 1e-9; v += minorStep) {
+      // 主目盛りと重なる位置は主目盛り側で描画するのでスキップ
+      const onMajor = Math.abs((v - o.yMin) / o.yStep - Math.round((v - o.yMin) / o.yStep)) < 1e-6;
+      if (onMajor) continue;
+      const y = yPos(v);
+      el.push(`<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${GRID}" stroke-width="0.5" stroke-dasharray="2,2"/>`);
+    }
+  }
+  // 目盛り・グリッド(主)
   for (let v = o.yMin; v <= o.yMax + 1e-9; v += o.yStep) {
     const y = yPos(v);
     el.push(`<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${GRID}" stroke-width="1"/>`);
