@@ -7,6 +7,7 @@
 // コレクション構造:
 //   /users/{uid}            - ユーザープロファイル・進捗
 //   /rooms/{roomId}         - PvPルーム（参加者のみ更新可）
+//   /catwars_rooms/{roomId} - CAT-WARS対戦ルーム（参加者のみ更新可。ticksはRTDB側）
 //   /config/{docId}         - ゲーム設定・月次チャンピオン (管理者のみ書込み)
 //   /rankings/{docId}       - 月次サブトピック別ランキング
 //   /classStatsCache/{docId}- 学校対抗統計の共有キャッシュ
@@ -88,6 +89,57 @@ service cloud.firestore {
         && (isParticipant() || isGuestJoin() || isStaleRoomCleanup() || isAdmin());
 
       // 参加者のみ削除可能にし、ゾンビルームの蓄積を防止
+      allow delete: if request.auth != null
+        && (resource.data.hostId == request.auth.uid
+            || resource.data.guestId == request.auth.uid
+            || resource.data.status == 'finished'
+            || isAdmin());
+    }
+
+    // CAT-WARS PvPルーム（catwars/net/matchmaking.ts）
+    // rooms と同じ考え方: 参加者のみ更新可・ホストのみ作成可・第三者は
+    // 十分に古いルームの掃除のみ許可する。tickごとのコマンドはこちらではなく
+    // Realtime Database（database.rules.json）に流れる。
+    match /catwars_rooms/{roomId} {
+
+      function isParticipant() {
+        return request.auth.uid == resource.data.hostId
+            || request.auth.uid == resource.data.guestId;
+      }
+
+      // 待機中ルームへのゲスト参加: guest欄を自分の情報で埋める更新のみ許可
+      function isGuestJoin() {
+        return resource.data.status == 'waiting'
+            && resource.data.guestId == null
+            && request.resource.data.guestId == request.auth.uid
+            && request.resource.data.hostId == resource.data.hostId;
+      }
+
+      // ホストが対戦開始する更新（status: waiting→playing, seedの確定）のみ許可
+      function isHostStart() {
+        return request.auth.uid == resource.data.hostId
+            && resource.data.status == 'waiting'
+            && request.resource.data.status == 'playing';
+      }
+
+      // ゾンビルーム掃除（第三者）: rooms と同じ下限（waiting 8分）
+      function isStaleRoomCleanup() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'winner'])
+            && request.resource.data.status == 'finished'
+            && resource.data.status == 'waiting'
+            && resource.data.createdAt != null
+            && resource.data.createdAt < request.time - duration.value(8, 'm');
+      }
+
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.hostId == request.auth.uid;
+
+      allow update: if request.auth != null
+        && (isParticipant() || isGuestJoin() || isHostStart() || isStaleRoomCleanup() || isAdmin());
+
       allow delete: if request.auth != null
         && (resource.data.hostId == request.auth.uid
             || resource.data.guestId == request.auth.uid
