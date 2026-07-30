@@ -30,7 +30,17 @@ export const isFirebaseConfigured: boolean =
   !!(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
 
 let app: any = null, auth: any = null, db: any = null, storage: any = null, googleProvider: any = null, analytics: any = null;
+let rtdb: any = null;
 let firestoreReady = false;
+
+/**
+ * Realtime Database が使えるか。
+ * CAT-WARS のロックステップ対戦（tickごとのコマンド配送）だけがこれを使う。
+ * Firestore は「ドキュメント単位のCRUD」向けで毎秒数回の細かい書き込みには
+ * 課金・遅延の両面で不利なため、その用途だけ RTDB に分けている。
+ * 未設定でも、ソロプレイと既存のPvP（card_battle / speed_duel）には影響しない。
+ */
+export const isRealtimeDbConfigured: boolean = !!env.VITE_FIREBASE_DATABASE_URL;
 
 if (isFirebaseConfigured) {
   try {
@@ -89,6 +99,24 @@ if (isFirebaseConfigured) {
       }
     }
   }).catch(() => {});
+}
+
+/**
+ * Realtime Database を遅延取得する。
+ * firebase/database は 600KB 級のバンドルなので、PvP を始めるまで読み込まない
+ * （ソロプレイしかしない子どもの初回読み込みを重くしないため）。
+ */
+export async function getRealtimeDb(): Promise<any | null> {
+  if (!isFirebaseConfigured || !isRealtimeDbConfigured || !app) return null;
+  if (rtdb) return rtdb;
+  try {
+    const { getDatabase } = await import('firebase/database');
+    rtdb = getDatabase(app, env.VITE_FIREBASE_DATABASE_URL);
+    return rtdb;
+  } catch (e) {
+    console.error('[Battle-Math] Realtime Database の初期化に失敗:', e);
+    return null;
+  }
 }
 
 export { app, auth, db, storage, googleProvider, analytics, firestoreReady, checkFirestoreConnection };

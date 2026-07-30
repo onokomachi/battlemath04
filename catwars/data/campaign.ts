@@ -39,6 +39,8 @@
 //     Der & Deary 2006)。観察→判断→タップの1サイクルに現実的な余裕を残すには
 //     2秒台では足りない。※実測値は `docs/CATWARS_DESIGN.md` の表を参照。
 
+import { BuildingType } from '../types';
+
 export type EnemyUnitKind = 'grunt' | 'shooter' | 'runner' | 'brute' | 'flyer' | 'boss';
 
 /** 敵ウェーブ兵の基礎ステータス（章の倍率をかける前の素の値） */
@@ -93,6 +95,49 @@ export function pickWeightedEnemyUnit(
   return pool[pool.length - 1];
 }
 
+// ── 敵の生産施設 ─────────────────────────────────────────────────────
+//
+// 「敵は金山のぶんだけで戦力を出しているように見える」という指摘への対応。
+// 敵も味方と同じように**キャンプと兵舎を建てて**、そこから増援を出す。
+//
+//   ・アーミーキャンプ / 兵舎 は「増援の出口（湧き口）」になる
+//   ・生きている生産施設の数だけ、増援ポイントのたまる速さが上がる
+//   ・兵舎をこわすと、重量級（重装ロボ・飛行ドローン）を出せなくなる
+//
+// ねらいは②「戦略の工夫で勝てる構成」。コアまで一直線に殴るだけでなく、
+// 「先にキャンプをつぶすと増援が目に見えて減る」という因果を子どもが
+// 自分で発見できるようにする。破壊時にはメッセージでも明示する。
+export const ENEMY_PRODUCTION_RATE: Partial<Record<BuildingType, number>> = {
+  [BuildingType.ARMY_CAMP]: 1.2,
+  [BuildingType.BARRACKS]: 1.0,
+  [BuildingType.GOLD_MINE]: 0.5,
+};
+
+/** 増援の湧き口になる施設（＝ここから敵が出てくる） */
+export const ENEMY_SPAWN_BUILDINGS: BuildingType[] = [
+  BuildingType.ARMY_CAMP,
+  BuildingType.BARRACKS,
+];
+
+/** 兵舎が生きているあいだだけ出撃できる重量級 */
+export const BARRACKS_ONLY_UNITS: EnemyUnitKind[] = ['brute', 'flyer'];
+
+/**
+ * 敵の増援ポイントがたまる速さ(毎秒)を、生き残っている敵施設から計算する。
+ * コア側の基本値 `enemySpawnRatePerSec` に、各生産施設の寄与を足す。
+ * 施設をこわせば戻り値が下がる = プレイヤーの攻め方が敵の増援速度に直結する。
+ */
+export function enemySpawnRate(
+  d: ChapterDifficulty,
+  aliveProductionSubTypes: string[],
+): number {
+  let rate = d.enemySpawnRatePerSec;
+  for (const sub of aliveProductionSubTypes) {
+    rate += ENEMY_PRODUCTION_RATE[sub as BuildingType] ?? 0;
+  }
+  return rate;
+}
+
 export interface ChapterDifficulty {
   /** 敵ウェーブ兵のHP倍率 */
   enemyHpMult: number;
@@ -104,7 +149,11 @@ export interface ChapterDifficulty {
   defenseHpMult: number;
   /** 最初の増援が出るまでの猶予(ms)。序盤ほど長く取り、まず攻める体験を保証する */
   firstSpawnDelayMs: number;
-  /** 敵の増援ポイントがたまる速さ（毎秒）。ENEMY_UNIT_COST を割った値が実質の出現間隔になる */
+  /**
+   * 敵の増援ポイントがたまる速さ（毎秒）の**基本値**（コアぶん）。
+   * 実際の速さは、生きている生産施設の寄与を足した `enemySpawnRate()` の戻り値。
+   * ENEMY_UNIT_COST をその速さで割った値が、実質の出現間隔になる。
+   */
   enemySpawnRatePerSec: number;
   /** この章に出てくる敵の種類（コストが軽いほど出やすい） */
   unitPool: EnemyUnitKind[];
@@ -154,7 +203,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.7, enemyDamageMult: 0.6,
       defenseDamageMult: 0.6, defenseHpMult: 0.7,
-      firstSpawnDelayMs: 11000, enemySpawnRatePerSec: 4.0,
+      // 施設がすべて健在なら 1.8 + 金山0.5×2 + キャンプ1.2 = 4.0/秒
+      firstSpawnDelayMs: 11000, enemySpawnRatePerSec: 1.8,
       unitPool: ['grunt'],
       startEnergy: 260, energyPerSec: 1.6,
     },
@@ -174,7 +224,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.8, enemyDamageMult: 0.7,
       defenseDamageMult: 0.7, defenseHpMult: 0.8,
-      firstSpawnDelayMs: 10000, enemySpawnRatePerSec: 4.6,
+      // 健在なら 1.9 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 4.6/秒
+      firstSpawnDelayMs: 10000, enemySpawnRatePerSec: 1.9,
       unitPool: ['grunt', 'shooter'],
       startEnergy: 240, energyPerSec: 1.5,
     },
@@ -194,7 +245,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.9, enemyDamageMult: 0.85,
       defenseDamageMult: 0.8, defenseHpMult: 0.9,
-      firstSpawnDelayMs: 9000, enemySpawnRatePerSec: 5.2,
+      // 健在なら 2.5 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 5.2/秒
+      firstSpawnDelayMs: 9000, enemySpawnRatePerSec: 2.5,
       unitPool: ['grunt', 'shooter'],
       startEnergy: 220, energyPerSec: 1.4,
     },
@@ -214,7 +266,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.0, enemyDamageMult: 0.95,
       defenseDamageMult: 0.9, defenseHpMult: 1.0,
-      firstSpawnDelayMs: 8500, enemySpawnRatePerSec: 5.8,
+      // 健在なら 3.1 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 5.8/秒
+      firstSpawnDelayMs: 8500, enemySpawnRatePerSec: 3.1,
       unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 200, energyPerSec: 1.3,
     },
@@ -234,7 +287,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.05, enemyDamageMult: 1.0,
       defenseDamageMult: 1.0, defenseHpMult: 1.05,
-      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 6.4,
+      // 健在なら 2.7 + 金山0.5 + キャンプ1.2 + 兵舎1.0×2 = 6.4/秒
+      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 2.7,
       unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 190, energyPerSec: 1.25,
     },
@@ -254,7 +308,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.1, enemyDamageMult: 1.05,
       defenseDamageMult: 1.1, defenseHpMult: 1.1,
-      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 7.0,
+      // 健在なら 3.3 + 金山0.5 + キャンプ1.2 + 兵舎1.0×2 = 7.0/秒
+      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 3.3,
       unitPool: ['grunt', 'shooter', 'brute'],
       startEnergy: 180, energyPerSec: 1.2,
     },
@@ -274,7 +329,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.2, enemyDamageMult: 1.15,
       defenseDamageMult: 1.2, defenseHpMult: 1.15,
-      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 7.6,
+      // 健在なら 3.7 + 金山0.5 + キャンプ1.2×2 + 兵舎1.0 = 7.6/秒
+      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 3.7,
       unitPool: ['grunt', 'shooter', 'runner', 'flyer'],
       startEnergy: 170, energyPerSec: 1.15,
     },
@@ -294,7 +350,8 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.3, enemyDamageMult: 1.2,
       defenseDamageMult: 1.3, defenseHpMult: 1.25,
-      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 8.5,
+      // 健在なら 3.1 + 金山0.5×2 + キャンプ1.2×2 + 兵舎1.0×2 = 8.5/秒
+      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 3.1,
       unitPool: ['grunt', 'shooter', 'brute', 'flyer'],
       bossAtSpawnCount: 9,
       startEnergy: 180, energyPerSec: 1.2,
@@ -341,6 +398,19 @@ export function assistLevelForLosses(consecutiveLosses: number): 0 | 1 | 2 {
   if (consecutiveLosses >= 2) return 1;
   return 0;
 }
+
+/**
+ * PvP用の難易度。対人戦では敵AIが動かない（相手プレイヤーが動かす）ので、
+ * ウェーブ関連の値は使われない。意味を持つのは startEnergy と energyPerSec だけ。
+ * 両者に同じ値を使うことで、資源の面で完全に対等な条件になる。
+ */
+export const PVP_DIFFICULTY: ChapterDifficulty = {
+  enemyHpMult: 1, enemyDamageMult: 1,
+  defenseDamageMult: 1, defenseHpMult: 1,
+  firstSpawnDelayMs: 999999, enemySpawnRatePerSec: 0,
+  unitPool: ['grunt'],
+  startEnergy: 220, energyPerSec: 1.4,
+};
 
 /** サポート段階を反映した実効難易度を返す */
 export function effectiveDifficulty(ch: CampaignChapter, assist: 0 | 1 | 2): ChapterDifficulty {

@@ -16,6 +16,7 @@ import { ArmyRosterScreen } from './army/ArmyRosterScreen';
 import { DailyBuffsPanel } from './learn/DailyBuffsPanel';
 import { ExchangePanel } from './learn/ExchangePanel';
 import { BaseBuilder } from './BaseBuilder';
+import { CatWarsPvpScreen } from './pvp/CatWarsPvpScreen';
 import { sfx } from '../utils/audioEngine';
 
 const font = { fontFamily: '"M PLUS Rounded 1c", sans-serif' };
@@ -24,7 +25,7 @@ const fontMono = { fontFamily: 'Orbitron, monospace' };
 // 出撃導線: 範囲えらび → ステージえらび → 陣地づくり → 戦闘
 // 陣地はステージごとに組む（ゾーンの広さが章によって変わるため）。
 // 陣地づくりは常にこの導線の中でのみ行う（ハブから単独で開く入口は廃止・一本化ずみ）。
-type View = 'home' | 'army' | 'range' | 'stage' | 'prep' | 'battle' | 'buffs' | 'mercs';
+type View = 'home' | 'army' | 'range' | 'stage' | 'prep' | 'battle' | 'buffs' | 'mercs' | 'pvp';
 
 interface Props {
   onExit: () => void;
@@ -71,6 +72,7 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
   };
 
   // ── サブ画面 ───────────────────────────────
+  if (view === 'pvp') return <CatWarsPvpScreen onBack={() => setView('home')} playerName={playerName ?? 'あなた'} />;
   if (view === 'army') return <ArmyRosterScreen onBack={() => setView('home')} />;
 
   if (view === 'range') {
@@ -198,6 +200,8 @@ export const CatWars: React.FC<Props> = ({ onExit, playerName }) => {
           onClick={() => setView('army')} />
         <HubButton icon="✨" label="出撃バフ" sub="⚡エナジーで今日の戦力UP" color="#facc15"
           onClick={() => setView('buffs')} />
+        <HubButton icon="🤝" label="たいせん" sub="ともだちと ネコ軍団で しょうぶ" color="#a855f7"
+          onClick={() => setView('pvp')} />
       </div>
 
       {/* Base mini-preview（陣地の編集は出撃フローの中でのみ行う。ここは今日のもちものの確認のみ） */}

@@ -44,6 +44,8 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.TOWN_HALL, x: 24, y: 7 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 3 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 12 },
+      // 敵の増援もキャンプから出る（第1章はまだ1つだけ）
+      { type: BuildingType.ARMY_CAMP, x: 21, y: 3 },
     ],
     playerDeployZone: { xMin: 0, xMax: 9, yMin: 0, yMax: 15 },
   },
@@ -72,6 +74,8 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 22, y: 8 },
       { type: BuildingType.WALL, x: 22, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 1 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 11 },
+      { type: BuildingType.BARRACKS, x: 26, y: 4 },
     ],
     playerDeployZone: { xMin: 0, xMax: 5, yMin: 0, yMax: 15 },
   },
@@ -98,6 +102,8 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 8 },
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 7 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 2 },
+      { type: BuildingType.BARRACKS, x: 26, y: 12 },
     ],
     playerDeployZone: { xMin: 0, xMax: 9, yMin: 0, yMax: 15 },
   },
@@ -125,6 +131,8 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 5 },
       { type: BuildingType.WALL, x: 23, y: 10 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 2 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 12 },
+      { type: BuildingType.BARRACKS, x: 26, y: 5 },
     ],
     playerDeployZone: { xMin: 0, xMax: 3, yMin: 0, yMax: 15 },
     meteorZones: [
@@ -158,6 +166,9 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.HIDDEN_TESLA, x: 21, y: 10 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 1 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 12 },
+      { type: BuildingType.BARRACKS, x: 26, y: 4 },
+      { type: BuildingType.BARRACKS, x: 26, y: 10 },
     ],
     playerDeployZone: { xMin: 0, xMax: 7, yMin: 0, yMax: 15 },
     alienNests: [
@@ -189,6 +200,9 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 8 },
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 12 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 1 },
+      { type: BuildingType.BARRACKS, x: 26, y: 5 },
+      { type: BuildingType.BARRACKS, x: 26, y: 9 },
     ],
     playerDeployZone: { xMin: 0, xMax: 9, yMin: 0, yMax: 15 },
     titan: {
@@ -225,6 +239,9 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 8 },
       { type: BuildingType.WALL, x: 23, y: 9 },
       { type: BuildingType.GOLD_MINE, x: 26, y: 0 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 2 },
+      { type: BuildingType.ARMY_CAMP, x: 25, y: 12 },
+      { type: BuildingType.BARRACKS, x: 26, y: 9 },
     ],
     playerDeployZone: { xMin: 0, xMax: 4, yMin: 0, yMax: 15 },
     meteorZones: [
@@ -263,6 +280,10 @@ export const BATTLE_MAPS: BattleMap[] = [
       { type: BuildingType.WALL, x: 23, y: 10 },
       { type: BuildingType.GOLD_MINE, x: 27, y: 1 },
       { type: BuildingType.GOLD_MINE, x: 27, y: 14 },
+      { type: BuildingType.ARMY_CAMP, x: 26, y: 3 },
+      { type: BuildingType.ARMY_CAMP, x: 26, y: 11 },
+      { type: BuildingType.BARRACKS, x: 27, y: 6 },
+      { type: BuildingType.BARRACKS, x: 27, y: 9 },
     ],
     playerDeployZone: { xMin: 0, xMax: 7, yMin: 0, yMax: 15 },
     meteorZones: [
@@ -285,6 +306,62 @@ export const BATTLE_MAPS: BattleMap[] = [
 
 export const BATTLE_MAP_BY_ID: Record<string, BattleMap> =
   Object.fromEntries(BATTLE_MAPS.map(m => [m.id, m]));
+
+// ── PvP用の対称マップ ────────────────────────────────────────────────────
+//
+// キャンペーンのマップは「左＝自陣／右＝敵陣」の非対称設計なので、対人戦には
+// そのまま使えない。地形が x=13.5 を軸に**完全に鏡写し**になるマップを用意し、
+// どちらの側に立っても条件が同じになるようにする。
+// 敵拠点（enemyBase）は空で、両者が陣地づくりで組んだ配置がそのまま入る。
+const mirrorX = (x: number) => GRID_W - 1 - x;
+
+/** 左半分に置いた地形を、右半分へ鏡写しにして返す */
+const symmetric = (left: TerrainTile[]): TerrainTile[] => [
+  ...left,
+  ...left.map(t => ({ x: mirrorX(t.x), y: t.y, type: t.type })),
+];
+
+export const PVP_MAPS: BattleMap[] = [
+  {
+    id: 'pvp-mirror',
+    name: 'ミラー・アリーナ',
+    description: '左右まったく同じ形の対戦場。おたがいの陣地から せめこもう！',
+    terrain: symmetric([
+      ...col(9, 'ROCK', 1, 4),
+      ...col(9, 'ROCK', 11, 14),
+      ...rect(11, 6, 12, 9, 'SWAMP'),
+    ]),
+    enemyBase: [],
+    playerDeployZone: { xMin: 0, xMax: 7, yMin: 0, yMax: GRID_H - 1 },
+  },
+  {
+    id: 'pvp-crossfire',
+    name: 'クロスファイア',
+    description: '中央に溶岩の帯。上下を回りこむか、思いきって突っきるか。',
+    terrain: symmetric([
+      ...rect(12, 0, 13, 3, 'LAVA'),
+      ...rect(12, 12, 13, 15, 'LAVA'),
+      ...col(8, 'ROCK', 6, 9),
+    ]),
+    enemyBase: [],
+    playerDeployZone: { xMin: 0, xMax: 6, yMin: 0, yMax: GRID_H - 1 },
+  },
+];
+
+export const PVP_MAP_BY_ID: Record<string, BattleMap> =
+  Object.fromEntries(PVP_MAPS.map(m => [m.id, m]));
+
+/**
+ * 陣地の配置を左右反転する。P2（右側）の陣地を、P1が左に組んだのと
+ * 同じ形のまま右半分へ写すために使う。
+ * 幅 w の建物は [x, x+w-1] を占めるので、反転後の左端は GRID_W - x - w。
+ */
+export function mirrorBase<T extends { type: BuildingType; x: number; y: number }>(
+  base: T[],
+  widthOf: (type: BuildingType) => number,
+): T[] {
+  return base.map(b => ({ ...b, x: GRID_W - b.x - widthOf(b.type) }));
+}
 
 /** 自陣ゾーンの広さ（マス数）。拠点づくり画面の説明に使う。 */
 export function zoneSize(m: BattleMap): { w: number; h: number; cells: number } {
