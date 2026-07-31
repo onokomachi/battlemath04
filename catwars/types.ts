@@ -73,6 +73,12 @@ export interface BattleEntity {
   path?: Coordinates[]; // Current path to target
   targetPreference: 'ANY' | 'DEFENSE' | 'RESOURCE' | 'RUSH' | 'HOLD' | 'MOVE_TO';
   customTarget?: { x: number; y: number };
+  /**
+   * プレイヤーが「こいつを狙え」と名指ししたエンティティID。
+   * 生きているあいだは、距離に関係なくこの相手を最優先で追いかけて攻撃する。
+   * 倒されたら自動で解除され、通常の「いちばん近い敵」に戻る。
+   */
+  focusId?: string | null;
   isHidden?: boolean; // For traps
 }
 

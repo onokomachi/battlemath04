@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:sim": "tsx scripts/simTest.ts"
+    "test:sim": "tsx scripts/simTest.ts",
+    "test:balance": "tsx scripts/balanceTest.ts"
   },
   "dependencies": {
     "firebase": "^12.2.1",

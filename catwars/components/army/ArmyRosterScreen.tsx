@@ -140,17 +140,26 @@ const DetailModal: React.FC<{
         </div>
 
         {/* Base stats */}
+        {/* 射程・再出撃・攻城倍率は、どのネコをいつ出すかを決める中核の数字なので
+            図鑑にも出す（砲台の射程4.5と見くらべられるようにする）。 */}
         <div className="grid grid-cols-3 gap-2 mt-4">
           {[
             { l: 'HP', v: Math.round(fam.base.hp * STAGE_MULT[curStage].hp) },
             { l: '攻撃', v: Math.round(fam.base.damage * STAGE_MULT[curStage].dmg) },
             { l: '速さ', v: fam.base.moveSpeed.toFixed(1) },
+            { l: '射程', v: fam.base.attackRange.toFixed(1) },
+            { l: '再出撃', v: (fam.cooldownMs / 1000).toFixed(1) + '秒' },
+            { l: '建物へ', v: '×' + fam.buildingDamageMult.toFixed(1) },
           ].map(s => (
             <div key={s.l} className="text-center p-2 rounded-lg" style={{ background: 'rgba(255,255,255,0.04)' }}>
               <div className="text-white font-bold text-base" style={fontMono}>{s.v}</div>
               <div className="text-white/40 text-[10px]">{s.l}</div>
             </div>
           ))}
+        </div>
+        <div className="text-white/35 text-[10px] mt-2 leading-relaxed">
+          ※ 敵の砲台は射程4.5・とても長い。射程で勝てないネコは、タンク系に受けてもらうか、
+          建物へのダメージが大きいネコ（ぼむにゃー ×4.0）でこわそう。
         </div>
       </div>
     </div>

@@ -37,6 +37,8 @@ const MOVE_CELLS_PER_SEC = 0.78;
 // 経路が見つからないときの直進フォールバックは旧実装で 0.010（=毎秒0.6マス）
 const FALLBACK_CELLS_PER_SEC = 0.60;
 
+/** 「手詰まり」が続いたと判定するまでの時間（30秒） */
+const STALL_LOSE_TICKS = msToTicks(30000);
 const SPELL_DURATION_TICKS = msToTicks(6000);
 const SPELL_RADIUS = 2.8;
 const HEAL_AURA_INTERVAL_TICKS = msToTicks(3000);
@@ -136,6 +138,7 @@ export function createSimState(cfg: SimConfig, init: SimInit): SimState {
     titanDir: 1,
     aim: {},
     skeletonsSpawned: false,
+    stalledSinceTick: -1,
     hadEnemyBuildings: init.defenderBuildings.length > 0,
     hadPlayerTownHall: init.playerBuildings.some(b => b.type === BuildingType.TOWN_HALL),
   };
@@ -259,7 +262,8 @@ function applyCommand(
       const line = cfg.unitStats[cmd.player][cmd.troopId];
       if (!line) return;
       const cost = Math.round(line.cost * cfg.costMult[cmd.player]);
-      const cdTicks = msToTicks(cfg.deployCooldownMs[cmd.player]);
+      // 再出撃の待ち時間はキャラごとに違う（にゃんこ大戦争と同じ考え方）
+      const cdTicks = msToTicks(line.cooldownMs);
       const last = p.deployCd[cmd.troopId];
       if (last !== undefined && state.tick - last < cdTicks) return;
       if (p.energy < cost) return;
@@ -286,8 +290,22 @@ function applyCommand(
       if (!e || e.hp <= 0 || playerOf(e) !== cmd.player || e.type !== 'TROOP') return;
       e.customTarget = { x: cmd.x, y: cmd.y };
       e.path = [];
+      e.focusId = null;              // 場所への移動命令は、名指しターゲットを打ち消す
       e.targetPreference = 'MOVE_TO';
       out.push({ type: 'MESSAGE', text: '📍 移動命令を発令！', durationMs: 1500 });
+      return;
+    }
+
+    case 'FOCUS': {
+      const e = state.entities.find(en => en.id === cmd.entityId);
+      if (!e || e.hp <= 0 || playerOf(e) !== cmd.player || e.type !== 'TROOP') return;
+      const t = state.entities.find(en => en.id === cmd.targetId);
+      if (!t || t.hp <= 0 || !isHostile(e, t)) return;
+      e.focusId = cmd.targetId;
+      e.customTarget = undefined;    // 名指しは場所への移動命令を打ち消す
+      e.path = [];
+      e.targetPreference = 'ANY';
+      out.push({ type: 'MESSAGE', text: '🎯 ねらいを さだめた！', durationMs: 1500 });
       return;
     }
 
@@ -553,14 +571,26 @@ export function simulateTick(
     out.push({ type: 'RESULT', winner: 'P2' });
     return out;
   }
-  // PvEのみ: 手駒も資源も尽きたら敗北（PvPでは両者が同時に手詰まりになりうるので使わない）
+  // PvEのみ: 手詰まり（手駒ゼロ＋最安ネコも買えない）が**続いたら**敗北。
+  //
+  // 以前は一瞬でもこの状態になった時点で即敗北にしていたが、⚡の自然回復を
+  // 上げたことで「出した直後は毎回この状態」になり、戦線が一度途切れただけで
+  // 負ける理不尽な仕様になっていた（実測: 第8章で自軍コアが無傷のまま
+  // 52秒で敗北）。⚡が回復し続ける以上ほんとうの手詰まりは起きえないので、
+  // ここは「本当に何もできない状態が続いた場合」だけを拾う保険にする。
   if (cfg.mode === 'PVE' && state.started) {
     const alive = state.entities.some(e => e.type === 'TROOP' && e.team === 'ATTACKER');
-    if (!alive && Math.floor(state.players.P1.energy) < cfg.minTroopCost.P1) {
-      state.result = 'P2';
-      out.push({ type: 'SFX', name: 'battleLose' });
-      out.push({ type: 'RESULT', winner: 'P2' });
-      return out;
+    const broke = Math.floor(state.players.P1.energy) < cfg.minTroopCost.P1;
+    if (!alive && broke) {
+      if (state.stalledSinceTick < 0) state.stalledSinceTick = state.tick;
+      if (state.tick - state.stalledSinceTick >= STALL_LOSE_TICKS) {
+        state.result = 'P2';
+        out.push({ type: 'SFX', name: 'battleLose' });
+        out.push({ type: 'RESULT', winner: 'P2' });
+        return out;
+      }
+    } else {
+      state.stalledSinceTick = -1;
     }
   }
 
@@ -665,6 +695,14 @@ function updateTroop(
   const potential = state.entities.filter(o => o.hp > 0 && isHostile(entity, o) && !o.isHidden);
   if (potential.length === 0) return;
 
+  // ── 名指しターゲット（プレイヤーが敵をタップして指定したもの）──
+  // 生きているあいだは距離に関係なくこいつを追う。倒されたら自動で解除。
+  let focused: BattleEntity | null = null;
+  if (entity.focusId) {
+    focused = potential.find(o => o.id === entity.focusId) ?? null;
+    if (!focused) entity.focusId = null;
+  }
+
   let preferred = potential;
   if (entity.targetPreference === 'DEFENSE') {
     const defenses = potential.filter(t =>
@@ -676,17 +714,19 @@ function updateTroop(
   }
 
   // いちばん近い相手を選ぶ。距離が同点のときは id 順で決める（決定論のため）
-  let best: BattleEntity | null = null;
-  let minD = Infinity;
-  for (const t of preferred) {
-    const d = dist2(t.x, t.y, entity.x, entity.y);
-    if (d < minD || (d === minD && best && t.id < best.id)) { minD = d; best = t; }
-  }
+  let best: BattleEntity | null = focused;
   if (!best) {
-    minD = Infinity;
-    for (const t of potential) {
+    let minD = Infinity;
+    for (const t of preferred) {
       const d = dist2(t.x, t.y, entity.x, entity.y);
       if (d < minD || (d === minD && best && t.id < best.id)) { minD = d; best = t; }
+    }
+    if (!best) {
+      minD = Infinity;
+      for (const t of potential) {
+        const d = dist2(t.x, t.y, entity.x, entity.y);
+        if (d < minD || (d === minD && best && t.id < best.id)) { minD = d; best = t; }
+      }
     }
   }
   if (!best) return;
@@ -718,9 +758,20 @@ function updateTroop(
     target.subType === BuildingType.WALL ||
     hasLineOfSight(entity.x + 0.5, entity.y + 0.5, target.x + 0.5, target.y + 0.5, wallCells);
 
+  // 移動命令中は「立ち止まって撃つ」をしない。
+  // ③のフィードバック対応: 以前は射程内に敵がいると必ずここで return していたため、
+  // 移動を命じても交戦が始まった瞬間にその場に居ついてしまった。
+  // 移動命令が出ているあいだは**移動を最優先**にし、撃てるなら歩きながら撃つ。
+  const movingByOrder = entity.targetPreference === 'MOVE_TO' && !!entity.customTarget;
+
   if (distToTarget <= entity.attackRange && canSee) {
     if (state.tick - entity.lastAttack >= msToTicks(atkSpeed)) {
-      target.hp -= damage;
+      // 攻城倍率: 爆発系は建物に大ダメージ（役割説明・章のヒントのとおり）。
+      // これが無かったため、砲台が並ぶ終盤の要塞を崩す手段が実質存在しなかった。
+      const bMult = target.type === 'BUILDING' && owner
+        ? (cfg.unitStats[owner][entity.subType]?.buildingDamageMult ?? 1)
+        : 1;
+      target.hp -= damage * bMult;
       entity.lastAttack = state.tick;
       out.push({ type: 'DAMAGED', entityId: target.id });
       out.push({ type: 'SFX', name: 'hit' });
@@ -733,8 +784,11 @@ function updateTroop(
         : isHeavy ? '#fb923c' : '#fde68a';
       out.push({ type: 'HIT', x: target.x, y: target.y, fromX: entity.x, fromY: entity.y, kind, color });
     }
-    entity.path = [];
-    return;
+    if (!movingByOrder) {
+      entity.path = [];
+      return;
+    }
+    // 移動命令中は撃ったあとも歩き続ける（下の経路処理へ進む）
   }
 
   if (entity.targetPreference === 'HOLD') { entity.path = []; return; }
