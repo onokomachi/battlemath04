@@ -135,10 +135,14 @@ export function watchOpenRooms(cb: (rooms: CatWarsRoom[]) => void): () => void {
     const out: CatWarsRoom[] = [];
     snap.forEach(d => {
       const r = d.data() as CatWarsRoom & { createdAt?: { toMillis?: () => number } };
-      // 10分以上前の待機部屋はゾンビとみなして掃除する
+      // 10分以上前の待機部屋はゾンビとみなして掃除する。
+      // deleteDoc ではなく updateDoc(status→finished) にしているのは、
+      // Firestoreセキュリティルールの isStaleRoomCleanup() が「status/winnerだけを
+      // finishedに変える更新」だけを第三者に許可しているため（rooms コレクションと
+      // 同じパターン。参加者以外に delete 権限は与えていない）。
       const created = r.createdAt?.toMillis ? r.createdAt.toMillis() : 0;
       if (created > 0 && now - created > 10 * 60 * 1000) {
-        deleteDoc(doc(db!, COL, d.id)).catch(() => {});
+        updateDoc(doc(db!, COL, d.id), { status: 'finished', winner: 'abandoned' }).catch(() => {});
         return;
       }
       out.push(r);

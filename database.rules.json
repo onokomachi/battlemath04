@@ -1,0 +1,20 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "catwars_matches": {
+      "$matchId": {
+        "ticks": {
+          "$bucket": {
+            "$playerId": {
+              ".read": "auth != null",
+              ".write": "auth != null",
+              ".validate": "$playerId === 'P1' || $playerId === 'P2'"
+            }
+          }
+        }
+      }
+    }
+  }
+}
