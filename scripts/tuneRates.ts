@@ -1,100 +1,66 @@
 /**
- * 章ごとの敵増援レートを、目標勝率に合うよう二分探索で求める補助スクリプト。
- * バランス調整を勘ではなく数字で決めるために使う（結果を campaign.ts へ反映する）。
+ * 章ごとの敵増援レート（enemySpawnRatePerSec）を、目標勝率に合うよう
+ * 二分探索で求める補助スクリプト。バランス調整を勘ではなく数字で決めるために使う
+ * （結果を catwars/data/campaign.ts へ反映する）。
  *
  *   npx tsx scripts/tuneRates.ts
+ *   RUNS=16 npx tsx scripts/tuneRates.ts
+ *
+ * 計測条件（ボット・章ごとの想定装備）は scripts/botSim.ts と共有している。
  */
-import { SimRunner, CommandProvider } from '../catwars/sim/runner';
-import { buildSimConfig } from '../catwars/sim/setup';
-import { SimCommand, TICK_MS, TICKS_PER_SEC } from '../catwars/sim/types';
 import { CAMPAIGN } from '../catwars/data/campaign';
-import { BATTLE_MAP_BY_ID } from '../catwars/data/battleMaps';
-import { BuildingType } from '../catwars/types';
-import { DetRNG } from '../catwars/sim/rng';
+import { playOnce, seedFor, BARE_LOADOUT, SKILL_LEVELS, WEAK_SKILL } from './botSim';
 
-const QUIZ_INTERVAL_SEC = 14;
-const QUIZ_REWARD = 34;
-const TANK_RATIO = 0.25;
+const RUNS = Number(process.env.RUNS ?? 24);
+const MAX_SECONDS = Number(process.env.MAXSEC ?? 300);
+const USE_BARE = process.env.BARE === '1';
+const ITERS = Number(process.env.ITERS ?? 7);
+// 合格条件を「にがてな子が目標勝率に届くこと」に置いているので、探索も同じ条件で行う
+const SKILL = SKILL_LEVELS.find(s => s.label === process.env.SKILL) ?? WEAK_SKILL;
 
-class Bot implements CommandProvider {
-  private rng: DetRNG;
-  private q: SimCommand[] = [];
-  constructor(private runner: SimRunner, seed: number) { this.rng = new DetRNG(seed); }
-  think(): void {
-    const st = this.runner.state, cfg = this.runner.cfg, p = st.players.P1;
-    const qT = Math.round(QUIZ_INTERVAL_SEC * TICKS_PER_SEC);
-    if (st.tick > 0 && st.tick % qT === 0) {
-      this.q.push({ type: 'GRANT_ENERGY', player: 'P1', amount: QUIZ_REWARD });
-    }
-    const zone = this.runner.statics.deployZones.P1;
-    if (!zone) return;
-    const roll = this.rng.next();
-    const order = roll < 0.18 ? ['bomber', 'giant', 'barbarian']
-                : roll < TANK_RATIO + 0.18 ? ['giant', 'barbarian', 'archer']
-                : ['barbarian', 'archer', 'giant'];
-    for (const id of order) {
-      const line = cfg.unitStats.P1[id];
-      if (!line) continue;
-      const cost = Math.round(line.cost * cfg.costMult.P1);
-      if (p.energy < cost) continue;
-      const last = p.deployCd[id];
-      const cd = Math.max(1, Math.round(line.cooldownMs / TICK_MS));
-      if (last !== undefined && st.tick - last < cd) continue;
-      this.q.push({
-        type: 'DEPLOY', player: 'P1', troopId: id,
-        x: Math.max(zone.xMin, zone.xMax - 1 - this.rng.int(2)),
-        y: zone.yMin + this.rng.int(Math.max(1, zone.yMax - zone.yMin + 1)),
-      });
-      break;
-    }
-  }
-  commandsForTick(): SimCommand[] { const c = this.q; this.q = []; return c; }
-}
-
-function winRate(chapterIndex: number, baseRate: number, runs: number): number {
+function winRate(chapterIndex: number, baseRate: number): number {
   const ch = CAMPAIGN[chapterIndex];
-  const map = BATTLE_MAP_BY_ID[ch.mapId];
   let wins = 0;
-  for (let r = 0; r < runs; r++) {
-    const seed = 1000 + r * 7919;
-    const cfg = buildSimConfig({
-      mode: 'PVE', seed, chapter: ch,
+  for (let r = 0; r < RUNS; r++) {
+    const res = playOnce(chapterIndex, seedFor(r), {
+      skill: SKILL,
       difficulty: { ...ch.difficulty, enemySpawnRatePerSec: baseRate },
-      battleMap: map, p1: { stages: {}, buffs: { values: {} } },
+      loadout: USE_BARE ? BARE_LOADOUT : undefined,
+      maxSeconds: MAX_SECONDS,
     });
-    const runner = new SimRunner(cfg, {
-      defenderBuildings: map.enemyBase,
-      playerBuildings: [{ type: BuildingType.TOWN_HALL, x: 0, y: 7 }],
-      spellCharges: { P1: { HEAL: 2, RAGE: 2 }, P2: { HEAL: 0, RAGE: 0 } },
-    });
-    const bot = new Bot(runner, seed ^ 0x5bf03635);
-    const maxTicks = 300 * TICKS_PER_SEC;
-    for (let i = 0; i < maxTicks; i++) {
-      bot.think();
-      runner.advance(TICK_MS, bot);
-      if (runner.state.result) break;
-    }
-    if (runner.state.result === 'P1') wins++;
+    if (res.win) wins++;
   }
-  return (wins / runs) * 100;
+  return (wins / RUNS) * 100;
 }
 
 const TARGET: Record<number, number> = { 1: 85, 2: 85, 3: 72, 4: 72, 5: 72, 6: 70, 7: 58, 8: 55 };
 
-console.log('\n章ごとの敵増援レート（基本値）を二分探索で決める\n');
+console.log('\n章ごとの敵増援レート（基本値）を二分探索で決める');
+console.log(`（${USE_BARE ? '素の条件' : '章ごとの想定装備'} / 上手さ「${SKILL.label}」/ 各点 ${RUNS}試合）\n`);
 console.log('章  目標勝率   決定した基本値   その時の勝率');
 console.log('─'.repeat(52));
+
+// CH=3,4,5 のように章を絞れる（1章ずつ詰めたいときに使う）
+const ONLY = (process.env.CH ?? '').split(',').map(s => Number(s.trim())).filter(n => n > 0);
+const LO = Number(process.env.LO ?? 3);
+const HI = Number(process.env.HI ?? 45);
+
 const found: number[] = [];
 for (let i = 0; i < CAMPAIGN.length; i++) {
+  if (ONLY.length > 0 && !ONLY.includes(CAMPAIGN[i].no)) continue;
   const target = TARGET[CAMPAIGN[i].no];
-  let lo = 0.5, hi = 40;   // レートが高いほど難しい＝勝率は単調に下がる
+  // レートが高いほど敵が増える＝勝率は単調に下がる、という前提で二分探索する
+  let lo = LO, hi = HI;
   let best = lo, bestRate = 0;
-  for (let iter = 0; iter < 7; iter++) {
+  for (let iter = 0; iter < ITERS; iter++) {
     const mid = (lo + hi) / 2;
-    const wr = winRate(i, mid, 24);
+    const wr = winRate(i, mid);
     if (wr >= target) { best = mid; bestRate = wr; lo = mid; } else { hi = mid; }
   }
   found.push(Number(best.toFixed(1)));
-  console.log(`${String(CAMPAIGN[i].no).padStart(2)}  ${String(target).padStart(6)}%   ${best.toFixed(1).padStart(12)}   ${bestRate.toFixed(0).padStart(9)}%`);
+  console.log(
+    `${String(CAMPAIGN[i].no).padStart(2)}  ${String(target).padStart(6)}%   ` +
+    `${best.toFixed(1).padStart(12)}   ${bestRate.toFixed(0).padStart(9)}%`
+  );
 }
 console.log('\ncampaign.ts に入れる値:', found.join(', '), '\n');

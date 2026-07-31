@@ -413,9 +413,14 @@ function runEnemyAI(state: SimState, cfg: SimConfig, obstacles: Set<string>, sta
   }
   const pending = state.ai.pendingUnit;
   const isFirst = state.ai.spawnCount === 0;
+  // 下限 600ms。ここは 1500ms だったが、それだと終盤の章で
+  // enemySpawnRatePerSec をいくら上げても「1.5秒に1体」で頭打ちになり、
+  // 実測で第4〜5章が 1.7秒/体 に貼りついていた（＝レートを上げても
+  // 難易度が動かない）。にゃんこ大戦争のように「わっと押し寄せる」波を
+  // 作れるよう、律速をレート側に戻す。
   const intervalTicks = isFirst
     ? msToTicks(d.firstSpawnDelayMs)
-    : msToTicks(Math.max(1500, (ENEMY_UNIT_COST[pending] / Math.max(0.1, spawnRate)) * 1000));
+    : msToTicks(Math.max(600, (ENEMY_UNIT_COST[pending] / Math.max(0.1, spawnRate)) * 1000));
 
   if (state.tick - state.ai.lastSpawnTick > intervalTicks) {
     state.ai.lastSpawnTick = state.tick;
@@ -500,7 +505,15 @@ export function simulateTick(
     if (owner) {
       // 撃破報酬にはGOLD_BOOSTを掛けない（元実装でも自然回復のレートにのみ掛かる）。
       // レート側のバフは cfg.energyPerSec に焼き込みずみ。
-      state.players[OPPONENT[owner]].killBuffer += e.type === 'BUILDING' ? 30 : 8;
+      //
+      // 【一律8→強さに比例へ】敵の増援を増やしたら、逆にプレイヤーが有利になった。
+      // 雑兵1体=8⚡ で、ネコ1体が30⚡。つまり雑兵を4体倒すだけで次のネコが出せる。
+      // 「敵を増やす→⚡が増える→もっとネコが出せる」という正のループになっていて、
+      // 増援レートをいくら上げても勝率が100%から動かなかった（実測: レート89でも100%）。
+      // 倒した相手の強さ（最大HP）に応じた報酬にして、
+      // 「雑魚はほとんど稼げない／大物を倒すと大きい」形に直す。
+      state.players[OPPONENT[owner]].killBuffer +=
+        e.type === 'BUILDING' ? 30 : Math.max(1, Math.round(1 + e.maxHp / 30));
     }
     if (e.type === 'BUILDING') {
       out.push({ type: 'SFX', name: 'explosion' });

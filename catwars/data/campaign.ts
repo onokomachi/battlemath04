@@ -75,6 +75,17 @@ export const ENEMY_UNIT_STATS: Record<EnemyUnitKind, {
 // enemySpawnRatePerSec（毎秒たまるポイント）で割った値が、そのキャラの
 // 実質的な出現間隔になる。値が大きいキャラほど出にくく、狙って通り道に
 // 送りこまれる感じを減らして「時々つよいのが混ざる」自然な出現にしている。
+//
+// ── 「まだ敵が少ない」という指摘（②⑦）への2回めの対応 ────────────────
+// 1回めで増援レートを上げたが、実測すると密度が上がりきらず、難易度も
+// ほとんど動かなかった。原因は2つあって、どちらもここでは直せなかった:
+//   (a) simulate.ts の出現間隔に 1500ms の下限があり、レートを上げても
+//       「1.5秒に1体」で頭打ちになっていた（→ 下限を600msへ）。
+//   (b) 撃破報酬が一律8⚡で、ネコ1体が30⚡。つまり雑兵4体で次の1体が出せる。
+//       敵を増やすほどプレイヤーの⚡収入が増える正のループになっていて、
+//       レートを89まで上げても勝率が100%のままだった（実測）。
+//       → 報酬を相手の最大HPに比例させ、雑魚では稼げないようにした。
+// そのうえで、下の各章の値は「1体あたり何秒で湧くか」から逆算している。
 export const ENEMY_UNIT_COST: Record<EnemyUnitKind, number> = {
   grunt: 28,
   shooter: 34,
@@ -111,10 +122,17 @@ export function pickWeightedEnemyUnit(
 // ねらいは②「戦略の工夫で勝てる構成」。コアまで一直線に殴るだけでなく、
 // 「先にキャンプをつぶすと増援が目に見えて減る」という因果を子どもが
 // 自分で発見できるようにする。破壊時にはメッセージでも明示する。
+//
+// 【加算→倍率に変更】もとは「毎秒+3.0」のような加算だった。ところが章が
+// 進むほど基本値そのものが大きくなるので、加算だと施設の比重が薄まり、
+// 第3〜5章では施設を全部こわしても増援が2割しか遅くならなかった（実測:
+// 0.91秒/体 → 1.13秒/体）。これでは「キャンプをつぶすと楽になる」という
+// いちばん教えたい因果が体感できない。倍率にすると、どの章でも同じ割合
+// （全壊で 4〜6割減）だけ効くので、学びが章によってブレなくなる。
 export const ENEMY_PRODUCTION_RATE: Partial<Record<BuildingType, number>> = {
-  [BuildingType.ARMY_CAMP]: 3.0,
-  [BuildingType.BARRACKS]: 2.5,
-  [BuildingType.GOLD_MINE]: 1.2,
+  [BuildingType.ARMY_CAMP]: 0.35,
+  [BuildingType.BARRACKS]: 0.30,
+  [BuildingType.GOLD_MINE]: 0.12,
 };
 
 /** 増援の湧き口になる施設（＝ここから敵が出てくる） */
@@ -128,18 +146,18 @@ export const BARRACKS_ONLY_UNITS: EnemyUnitKind[] = ['brute', 'flyer'];
 
 /**
  * 敵の増援ポイントがたまる速さ(毎秒)を、生き残っている敵施設から計算する。
- * コア側の基本値 `enemySpawnRatePerSec` に、各生産施設の寄与を足す。
+ * コア側の基本値 `enemySpawnRatePerSec` に、生きている生産施設ぶんの**倍率**を掛ける。
  * 施設をこわせば戻り値が下がる = プレイヤーの攻め方が敵の増援速度に直結する。
  */
 export function enemySpawnRate(
   d: ChapterDifficulty,
   aliveProductionSubTypes: string[],
 ): number {
-  let rate = d.enemySpawnRatePerSec;
+  let bonus = 0;
   for (const sub of aliveProductionSubTypes) {
-    rate += ENEMY_PRODUCTION_RATE[sub as BuildingType] ?? 0;
+    bonus += ENEMY_PRODUCTION_RATE[sub as BuildingType] ?? 0;
   }
-  return rate;
+  return d.enemySpawnRatePerSec * (1 + bonus);
 }
 
 export interface ChapterDifficulty {
@@ -154,8 +172,8 @@ export interface ChapterDifficulty {
   /** 最初の増援が出るまでの猶予(ms)。序盤ほど長く取り、まず攻める体験を保証する */
   firstSpawnDelayMs: number;
   /**
-   * 敵の増援ポイントがたまる速さ（毎秒）の**基本値**（コアぶん）。
-   * 実際の速さは、生きている生産施設の寄与を足した `enemySpawnRate()` の戻り値。
+   * 敵の増援ポイントがたまる速さ（毎秒）の**基本値**（生産施設が全滅した状態の値）。
+   * 実際の速さは、生きている生産施設ぶんの倍率を掛けた `enemySpawnRate()` の戻り値。
    * ENEMY_UNIT_COST をその速さで割った値が、実質の出現間隔になる。
    */
   enemySpawnRatePerSec: number;
@@ -207,7 +225,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.7, enemyDamageMult: 0.6,
       defenseDamageMult: 0.6, defenseHpMult: 0.7,
-      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 5.6,
+      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 9.7,
       unitPool: ['grunt'],
       startEnergy: 260, energyPerSec: 7.5,
     },
@@ -227,7 +245,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.8, enemyDamageMult: 0.7,
       defenseDamageMult: 0.7, defenseHpMult: 0.8,
-      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 6.3,
+      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 10.7,
       unitPool: ['grunt', 'shooter'],
       startEnergy: 250, energyPerSec: 7.7,
     },
@@ -247,7 +265,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.9, enemyDamageMult: 0.85,
       defenseDamageMult: 0.8, defenseHpMult: 0.9,
-      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 11.0,
+      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 19.1,
       unitPool: ['grunt', 'shooter'],
       startEnergy: 240, energyPerSec: 8.0,
     },
@@ -267,7 +285,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.0, enemyDamageMult: 0.95,
       defenseDamageMult: 0.9, defenseHpMult: 1.0,
-      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 13.0,
+      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 17.8,
       unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 230, energyPerSec: 8.2,
     },
@@ -287,7 +305,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.05, enemyDamageMult: 1.0,
       defenseDamageMult: 1.0, defenseHpMult: 1.05,
-      firstSpawnDelayMs: 6000, enemySpawnRatePerSec: 13.0,
+      firstSpawnDelayMs: 6000, enemySpawnRatePerSec: 16.4,
       unitPool: ['grunt', 'shooter', 'runner'],
       startEnergy: 220, energyPerSec: 8.4,
     },
@@ -307,7 +325,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.1, enemyDamageMult: 1.05,
       defenseDamageMult: 1.1, defenseHpMult: 1.1,
-      firstSpawnDelayMs: 5500, enemySpawnRatePerSec: 14.5,
+      firstSpawnDelayMs: 5500, enemySpawnRatePerSec: 14.4,
       unitPool: ['grunt', 'shooter', 'brute'],
       startEnergy: 215, energyPerSec: 8.6,
     },
@@ -327,7 +345,7 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.2, enemyDamageMult: 1.15,
       defenseDamageMult: 1.2, defenseHpMult: 1.15,
-      firstSpawnDelayMs: 5000, enemySpawnRatePerSec: 16.0,
+      firstSpawnDelayMs: 5000, enemySpawnRatePerSec: 15.4,
       unitPool: ['grunt', 'shooter', 'runner', 'flyer'],
       startEnergy: 210, energyPerSec: 8.8,
     },
@@ -346,13 +364,16 @@ export const CAMPAIGN: CampaignChapter[] = [
     mapId: 'map-citadel',
     difficulty: {
       enemyHpMult: 1.3, enemyDamageMult: 1.2,
-      defenseDamageMult: 1.3, defenseHpMult: 1.25,
-      firstSpawnDelayMs: 4500, enemySpawnRatePerSec: 11.0,
+      // 防衛施設が最多の章なので、HP倍率は上げない（威力だけで難しさを出す）
+      defenseDamageMult: 1.3, defenseHpMult: 1.0,
+      firstSpawnDelayMs: 4500, enemySpawnRatePerSec: 12.1,
       unitPool: ['grunt', 'shooter', 'brute', 'flyer'],
-      // 増援ペースを大きく上げたので、体数で指定すると出現が早まりすぎる
-      // （旧: 10秒間隔×9体=約90秒 → 新: 2秒間隔×9体=約20秒でボスが来ていた）。
-      // 元の「終盤に1回」という意図に合わせて体数を引き直した。
-      bossAtSpawnCount: 45,
+      // 増援ペースを上げるたびに、体数で指定したボス出現がどんどん早まる
+      // （旧: 10秒間隔×9体=約90秒 → 2秒間隔×9体=約20秒 → 1.4秒間隔×45体=約68秒）。
+      // 「終盤に1回だけ割りこむ」という元の意図に合わせて引き直した。
+      // 現在のペース（施設健在で1.41秒/体）なら 4.5秒 + 70体 ≒ 開始103秒。
+      // 生産施設をこわして増援を止めるほどボスも遅れて来る＝攻略のごほうびになる。
+      bossAtSpawnCount: 70,
       startEnergy: 210, energyPerSec: 9.0,
     },
     rewardCredits: 1200,
