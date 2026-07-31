@@ -29,6 +29,26 @@ export interface CharacterFamily {
     attackSpeed: number; // ms/攻撃
   };
   cost: { gold: number; count: number }; // 補充1回ぶん（ゴールドのみ）
+  /**
+   * 再出撃までの待ち時間(ms)。にゃんこ大戦争と同じく**キャラごとに違う**。
+   *
+   * 以前は全キャラ一律 1500ms で、強いキャラも連打で出せてしまい
+   * 「どれを出すか」を考える必要がなかった（⑦のフィードバック）。
+   * 安い前衛ほど短く、強力・高コストなほど長くすることで、
+   *   ・安いネコで壁を作りつつ
+   *   ・重いネコの再出撃までをどう凌ぐか
+   * という、にゃんこ大戦争的な編成・タイミングの判断が生まれる。
+   */
+  cooldownMs: number;
+  /**
+   * 建物（壁・砲台・コアなど）に当てたときのダメージ倍率。1.0 = 等倍。
+   *
+   * 爆発系(ぼむにゃー)は役割説明が「建物に大ダメージの爆弾魔」で、
+   * 第4章のヒントでも「爆発系は建物に大ダメージ。壁をこわす係にぴったり」と
+   * 子どもに教えているのに、**ダメージ計算にその処理が無かった**。
+   * 攻城役が存在しないため、砲台が並ぶ終盤の要塞を崩す手段が実質なかった。
+   */
+  buildingDamageMult: number;
   accent: string;
 
   // ── 見た目と役割の個性 ────────────────────────────────────────────
@@ -107,6 +127,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 60, damage: 15, moveSpeed: 2.5, target: 'ANY', attackRange: 1.2, attackSpeed: 1000 },
     cost: { gold: 30, count: 3 },
+    cooldownMs: 2000,
+    buildingDamageMult: 1.0,
     bodySize: 34, bodyType: 'がっしりした標準体型。肩幅が広く足が太い', defenseResist: 0.0,
   },
   {
@@ -120,6 +142,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 40, damage: 12, moveSpeed: 3.0, target: 'ANY', attackRange: 3.5, attackSpeed: 900 },
     cost: { gold: 30, count: 3 },
+    cooldownMs: 2600,
+    buildingDamageMult: 1.0,
     bodySize: 30, bodyType: 'すらりと細身。長い手足でしなやか', defenseResist: -0.1,
   },
   {
@@ -133,6 +157,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 300, damage: 25, moveSpeed: 1.5, target: 'DEFENSE', attackRange: 1.2, attackSpeed: 1200 },
     cost: { gold: 120, count: 1 },
+    cooldownMs: 8000,
+    buildingDamageMult: 1.5,
     bodySize: 58, bodyType: 'ずんぐりと巨大。腕と胴がとても太く、頭が小さく見えるほど', defenseResist: 0.45,
   },
   {
@@ -145,6 +171,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 55, damage: 30, moveSpeed: 2.0, target: 'ANY', attackRange: 3.0, attackSpeed: 1300 },
     cost: { gold: 140, count: 2 },
+    cooldownMs: 9000,
+    buildingDamageMult: 1.0,
     bodySize: 32, bodyType: '小柄で猫背ぎみ。ローブでからだが隠れている', defenseResist: -0.1,
   },
   {
@@ -157,6 +185,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 45, damage: 14, moveSpeed: 4.2, target: 'RESOURCE', attackRange: 1.2, attackSpeed: 700 },
     cost: { gold: 60, count: 4 },
+    cooldownMs: 3400,
+    buildingDamageMult: 1.0,
     bodySize: 26, bodyType: 'とても小さく細い。手足が長くて軽そう', defenseResist: -0.2,
   },
   {
@@ -169,6 +199,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 80, damage: 22, moveSpeed: 3.4, target: 'ANY', attackRange: 1.4, attackSpeed: 1000 },
     cost: { gold: 160, count: 1 },
+    cooldownMs: 10000,
+    buildingDamageMult: 1.0,
     bodySize: 38, bodyType: '胴は細いが翼が大きく横に広い', defenseResist: 0.0,
   },
   {
@@ -181,6 +213,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 70, damage: 8, moveSpeed: 2.2, target: 'ANY', attackRange: 1.4, attackSpeed: 1100 },
     cost: { gold: 120, count: 2 },
+    cooldownMs: 7000,
+    buildingDamageMult: 1.0,
     bodySize: 30, bodyType: '小柄で丸みのあるやさしい体型', defenseResist: 0.0,
   },
   {
@@ -193,6 +227,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 50, damage: 40, moveSpeed: 2.3, target: 'DEFENSE', attackRange: 1.2, attackSpeed: 1400 },
     cost: { gold: 100, count: 2 },
+    cooldownMs: 6000,
+    buildingDamageMult: 4.0,
     bodySize: 36, bodyType: 'ずんぐりして丸い。おなかが大きい', defenseResist: 0.15,
   },
   {
@@ -205,6 +241,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 1500, damage: 70, moveSpeed: 0.8, target: 'DEFENSE', attackRange: 1.4, attackSpeed: 2000 },
     cost: { gold: 600, count: 1 },
+    cooldownMs: 22000,
+    buildingDamageMult: 1.0,
     bodySize: 96, bodyType: '画面を圧するほど巨大。多頭と触手で横にも大きく広がる', defenseResist: 0.4,
   },
   {
@@ -215,8 +253,12 @@ export const CHARACTERS: CharacterFamily[] = [
       { stage: 2, name: 'かいざーにゃ',  minLevel: 10, flavor: '全身機械化されたサイボーグネコ。単眼センサーが敵を正確に捉える。' },
       { stage: 3, name: 'めかかいざー', minLevel: 30, flavor: '銀河皇帝の名を持つ機械神。超長距離の必殺砲は建物を一撃で消し飛ばす。' },
     ],
-    base: { hp: 800, damage: 110, moveSpeed: 1.0, target: 'ANY', attackRange: 3.5, attackSpeed: 2400 },
+    // 砲台(射程4.5)を唯一アウトレンジできる「攻城」役。
+    // 高コスト・長い再出撃時間と引きかえに、撃たれずに砲台を潰せる立ち位置にする。
+    base: { hp: 800, damage: 110, moveSpeed: 1.0, target: 'ANY', attackRange: 5.0, attackSpeed: 2400 },
     cost: { gold: 550, count: 1 },
+    cooldownMs: 20000,
+    buildingDamageMult: 3.0,
     bodySize: 86, bodyType: '巨大な機械の体。肩の砲塔で上半身が異様に大きい', defenseResist: 0.25,
   },
   {
@@ -229,6 +271,8 @@ export const CHARACTERS: CharacterFamily[] = [
     ],
     base: { hp: 1100, damage: 150, moveSpeed: 0.9, target: 'ANY', attackRange: 1.8, attackSpeed: 2600 },
     cost: { gold: 750, count: 1 },
+    cooldownMs: 26000,
+    buildingDamageMult: 1.0,
     bodySize: 92, bodyType: '長身で肩幅の広い逆三角形。マントで下半身まで大きく見える', defenseResist: 0.3,
   },
 ];

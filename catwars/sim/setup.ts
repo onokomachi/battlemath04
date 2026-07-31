@@ -63,6 +63,10 @@ export function resolveUnitStats(
       hp *= 1 + v(buffs, 'GIANT_FORTRESS') / 100;
     }
 
+    // FAST_DEPLOY バフはキャラごとの待ち時間に比例して効く
+    const fd = v(buffs, 'FAST_DEPLOY');
+    const cooldownMs = Math.max(400, Math.round(c.cooldownMs * (fd > 0 ? 1 - fd / 100 : 1)));
+
     out[c.id] = {
       hp: Math.round(hp),
       damage: Math.round(damage),
@@ -70,6 +74,8 @@ export function resolveUnitStats(
       attackSpeed: Math.round(attackSpeed),
       moveSpeed,
       cost: c.cost.gold,
+      cooldownMs,
+      buildingDamageMult: c.buildingDamageMult,
       target: c.base.target,
     };
   }

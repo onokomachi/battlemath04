@@ -53,9 +53,13 @@ export const ENEMY_UNIT_STATS: Record<EnemyUnitKind, {
   attackSpeed: number;  // ms/攻撃
   moveSpeed: number;
 }> = {
-  grunt:   { subType: 'barbarian',     label: 'ノラ兵',     hp: 70,  damage: 10, attackRange: 1.2, attackSpeed: 1200, moveSpeed: 2.0 },
-  shooter: { subType: 'archer',        label: 'スナイパー', hp: 50,  damage: 8,  attackRange: 3.0, attackSpeed: 1300, moveSpeed: 2.3 },
-  runner:  { subType: 'speed',         label: 'かけぬけ兵', hp: 45,  damage: 9,  attackRange: 1.2, attackSpeed: 900,  moveSpeed: 3.4 },
+  // ②「敵が少なすぎる」への対応で出現数を大きく増やしたため、雑兵は
+  // にゃんこ大戦争の雑魚と同じく「数は多いが打たれ弱い」方向へ振り直した。
+  // HPを据え置いたまま数だけ増やすと、盤上に敵がたまり続けて詰む
+  // （実測: 第8章で敵29体が同時に居座り、自軍コアが84秒で陥落した）。
+  grunt:   { subType: 'barbarian',     label: 'ノラ兵',     hp: 46,  damage: 9,  attackRange: 1.2, attackSpeed: 1200, moveSpeed: 2.0 },
+  shooter: { subType: 'archer',        label: 'スナイパー', hp: 36,  damage: 7,  attackRange: 3.0, attackSpeed: 1300, moveSpeed: 2.3 },
+  runner:  { subType: 'speed',         label: 'かけぬけ兵', hp: 32,  damage: 8,  attackRange: 1.2, attackSpeed: 900,  moveSpeed: 3.4 },
   brute:   { subType: 'giant',         label: '重装ロボ',   hp: 220, damage: 18, attackRange: 1.3, attackSpeed: 1500, moveSpeed: 1.4 },
   flyer:   { subType: 'flying',        label: '飛行ドローン', hp: 90, damage: 14, attackRange: 1.4, attackSpeed: 1100, moveSpeed: 3.0 },
   boss:    { subType: 'boss_overlord', label: '皇帝の親衛隊', hp: 700, damage: 45, attackRange: 1.8, attackSpeed: 2400, moveSpeed: 0.9 },
@@ -71,12 +75,23 @@ export const ENEMY_UNIT_STATS: Record<EnemyUnitKind, {
 // enemySpawnRatePerSec（毎秒たまるポイント）で割った値が、そのキャラの
 // 実質的な出現間隔になる。値が大きいキャラほど出にくく、狙って通り道に
 // 送りこまれる感じを減らして「時々つよいのが混ざる」自然な出現にしている。
+//
+// ── 「まだ敵が少ない」という指摘（②⑦）への2回めの対応 ────────────────
+// 1回めで増援レートを上げたが、実測すると密度が上がりきらず、難易度も
+// ほとんど動かなかった。原因は2つあって、どちらもここでは直せなかった:
+//   (a) simulate.ts の出現間隔に 1500ms の下限があり、レートを上げても
+//       「1.5秒に1体」で頭打ちになっていた（→ 下限を600msへ）。
+//   (b) 撃破報酬が一律8⚡で、ネコ1体が30⚡。つまり雑兵4体で次の1体が出せる。
+//       敵を増やすほどプレイヤーの⚡収入が増える正のループになっていて、
+//       レートを89まで上げても勝率が100%のままだった（実測）。
+//       → 報酬を相手の最大HPに比例させ、雑魚では稼げないようにした。
+// そのうえで、下の各章の値は「1体あたり何秒で湧くか」から逆算している。
 export const ENEMY_UNIT_COST: Record<EnemyUnitKind, number> = {
-  grunt: 38,
-  shooter: 44,
-  runner: 34,
-  brute: 105,
-  flyer: 68,
+  grunt: 28,
+  shooter: 34,
+  runner: 25,
+  brute: 95,
+  flyer: 60,
   boss: 500, // ボスは経済に乗せず bossAtSpawnCount で単発トリガーする
 };
 
@@ -107,10 +122,17 @@ export function pickWeightedEnemyUnit(
 // ねらいは②「戦略の工夫で勝てる構成」。コアまで一直線に殴るだけでなく、
 // 「先にキャンプをつぶすと増援が目に見えて減る」という因果を子どもが
 // 自分で発見できるようにする。破壊時にはメッセージでも明示する。
+//
+// 【加算→倍率に変更】もとは「毎秒+3.0」のような加算だった。ところが章が
+// 進むほど基本値そのものが大きくなるので、加算だと施設の比重が薄まり、
+// 第3〜5章では施設を全部こわしても増援が2割しか遅くならなかった（実測:
+// 0.91秒/体 → 1.13秒/体）。これでは「キャンプをつぶすと楽になる」という
+// いちばん教えたい因果が体感できない。倍率にすると、どの章でも同じ割合
+// （全壊で 4〜6割減）だけ効くので、学びが章によってブレなくなる。
 export const ENEMY_PRODUCTION_RATE: Partial<Record<BuildingType, number>> = {
-  [BuildingType.ARMY_CAMP]: 1.2,
-  [BuildingType.BARRACKS]: 1.0,
-  [BuildingType.GOLD_MINE]: 0.5,
+  [BuildingType.ARMY_CAMP]: 0.35,
+  [BuildingType.BARRACKS]: 0.30,
+  [BuildingType.GOLD_MINE]: 0.12,
 };
 
 /** 増援の湧き口になる施設（＝ここから敵が出てくる） */
@@ -124,18 +146,18 @@ export const BARRACKS_ONLY_UNITS: EnemyUnitKind[] = ['brute', 'flyer'];
 
 /**
  * 敵の増援ポイントがたまる速さ(毎秒)を、生き残っている敵施設から計算する。
- * コア側の基本値 `enemySpawnRatePerSec` に、各生産施設の寄与を足す。
+ * コア側の基本値 `enemySpawnRatePerSec` に、生きている生産施設ぶんの**倍率**を掛ける。
  * 施設をこわせば戻り値が下がる = プレイヤーの攻め方が敵の増援速度に直結する。
  */
 export function enemySpawnRate(
   d: ChapterDifficulty,
   aliveProductionSubTypes: string[],
 ): number {
-  let rate = d.enemySpawnRatePerSec;
+  let bonus = 0;
   for (const sub of aliveProductionSubTypes) {
-    rate += ENEMY_PRODUCTION_RATE[sub as BuildingType] ?? 0;
+    bonus += ENEMY_PRODUCTION_RATE[sub as BuildingType] ?? 0;
   }
-  return rate;
+  return d.enemySpawnRatePerSec * (1 + bonus);
 }
 
 export interface ChapterDifficulty {
@@ -150,8 +172,8 @@ export interface ChapterDifficulty {
   /** 最初の増援が出るまでの猶予(ms)。序盤ほど長く取り、まず攻める体験を保証する */
   firstSpawnDelayMs: number;
   /**
-   * 敵の増援ポイントがたまる速さ（毎秒）の**基本値**（コアぶん）。
-   * 実際の速さは、生きている生産施設の寄与を足した `enemySpawnRate()` の戻り値。
+   * 敵の増援ポイントがたまる速さ（毎秒）の**基本値**（生産施設が全滅した状態の値）。
+   * 実際の速さは、生きている生産施設ぶんの倍率を掛けた `enemySpawnRate()` の戻り値。
    * ENEMY_UNIT_COST をその速さで割った値が、実質の出現間隔になる。
    */
   enemySpawnRatePerSec: number;
@@ -203,10 +225,9 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.7, enemyDamageMult: 0.6,
       defenseDamageMult: 0.6, defenseHpMult: 0.7,
-      // 施設がすべて健在なら 1.8 + 金山0.5×2 + キャンプ1.2 = 4.0/秒
-      firstSpawnDelayMs: 11000, enemySpawnRatePerSec: 1.8,
+      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 9.7,
       unitPool: ['grunt'],
-      startEnergy: 260, energyPerSec: 1.6,
+      startEnergy: 260, energyPerSec: 7.5,
     },
     rewardCredits: 300,
   },
@@ -224,10 +245,9 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 0.8, enemyDamageMult: 0.7,
       defenseDamageMult: 0.7, defenseHpMult: 0.8,
-      // 健在なら 1.9 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 4.6/秒
-      firstSpawnDelayMs: 10000, enemySpawnRatePerSec: 1.9,
+      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 10.7,
       unitPool: ['grunt', 'shooter'],
-      startEnergy: 240, energyPerSec: 1.5,
+      startEnergy: 250, energyPerSec: 7.7,
     },
     rewardCredits: 380,
   },
@@ -238,17 +258,16 @@ export const CAMPAIGN: CampaignChapter[] = [
     enemyTitle: '隕石王',
     background: '隕石をあやつって自分のなわばりをつくる、いばりんぼうのネコ。中央に大きな隕石のかべを積み上げて通せんぼしている。',
     briefing: '中央の隕石はこわせない。上か下から回りこんで、敵のコアをねらおう。',
-    hint: 'タンク系（にゃいあんと）を先に出すと、砲台がタンクをねらってくれる。',
+    hint: '砲台は遠距離系より射程が長い。タンク系（にゃいあんと）を先に出して、砲撃を受けてもらおう。',
     victoryLine: '隕石王のなわばりは、こなごなにくずれ落ちた。',
     defeatLine: 'タンク系を先に出して、砲台のねらいを引きつけてみよう。',
     mapId: 'map-grassland',
     difficulty: {
       enemyHpMult: 0.9, enemyDamageMult: 0.85,
       defenseDamageMult: 0.8, defenseHpMult: 0.9,
-      // 健在なら 2.5 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 5.2/秒
-      firstSpawnDelayMs: 9000, enemySpawnRatePerSec: 2.5,
+      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 19.1,
       unitPool: ['grunt', 'shooter'],
-      startEnergy: 220, energyPerSec: 1.4,
+      startEnergy: 240, energyPerSec: 8.0,
     },
     rewardCredits: 460,
   },
@@ -259,17 +278,16 @@ export const CAMPAIGN: CampaignChapter[] = [
     enemyTitle: '要塞の守備隊長',
     background: '「まもりこそ最強」が口ぐせの、かたい鎧を着たネコ。自分の基地を分厚い装甲壁でぐるりと囲んでしまった。',
     briefing: 'コアは壁の中。壁をこわして進むか、飛行系で壁をこえよう。',
-    hint: '爆発系（ぼむにゃー）は建物に大ダメージ。壁をこわす係にぴったり。',
+    hint: '爆発系（ぼむにゃー）は建物に4倍ダメージ。壁や砲台をこわす係にぴったり。',
     victoryLine: '「まもりだけでは勝てない」。ヨロイニャンは静かにうなずいた。',
     defeatLine: '壁をこわす係と、コアをねらう係を分けてみよう。',
     mapId: 'map-fortress',
     difficulty: {
       enemyHpMult: 1.0, enemyDamageMult: 0.95,
       defenseDamageMult: 0.9, defenseHpMult: 1.0,
-      // 健在なら 3.1 + 金山0.5 + キャンプ1.2 + 兵舎1.0 = 5.8/秒
-      firstSpawnDelayMs: 8500, enemySpawnRatePerSec: 3.1,
+      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 17.8,
       unitPool: ['grunt', 'shooter', 'runner'],
-      startEnergy: 200, energyPerSec: 1.3,
+      startEnergy: 230, energyPerSec: 8.2,
     },
     rewardCredits: 550,
   },
@@ -287,10 +305,9 @@ export const CAMPAIGN: CampaignChapter[] = [
     difficulty: {
       enemyHpMult: 1.05, enemyDamageMult: 1.0,
       defenseDamageMult: 1.0, defenseHpMult: 1.05,
-      // 健在なら 2.7 + 金山0.5 + キャンプ1.2 + 兵舎1.0×2 = 6.4/秒
-      firstSpawnDelayMs: 8000, enemySpawnRatePerSec: 2.7,
+      firstSpawnDelayMs: 6000, enemySpawnRatePerSec: 16.4,
       unitPool: ['grunt', 'shooter', 'runner'],
-      startEnergy: 190, energyPerSec: 1.25,
+      startEnergy: 220, energyPerSec: 8.4,
     },
     rewardCredits: 650,
   },
@@ -301,17 +318,16 @@ export const CAMPAIGN: CampaignChapter[] = [
     enemyTitle: '重力使い',
     background: '重力をあやつって、あたり一面を歩きにくい沼に変えてしまったネコ。沼の中では、どんなに足のはやいネコもゆっくりになる。',
     briefing: '中央の沼はとおれるけど、おそくなる。左右の道を通るほうがはやいかも。',
-    hint: '沼の上は砲台に長くねらわれる。HPの高いタンク系なら渡りきれる。',
+    hint: '沼の上は砲台に長くねらわれる。タンク系で受けながら、ぼむにゃーで砲台をこわそう。',
     victoryLine: '重力がもとにもどり、ネコたちの足どりが軽くなった。',
     defeatLine: '沼を避けて、左右のはしを通ってみよう。',
     mapId: 'map-swamp',
     difficulty: {
       enemyHpMult: 1.1, enemyDamageMult: 1.05,
       defenseDamageMult: 1.1, defenseHpMult: 1.1,
-      // 健在なら 3.3 + 金山0.5 + キャンプ1.2 + 兵舎1.0×2 = 7.0/秒
-      firstSpawnDelayMs: 7500, enemySpawnRatePerSec: 3.3,
+      firstSpawnDelayMs: 5500, enemySpawnRatePerSec: 14.4,
       unitPool: ['grunt', 'shooter', 'brute'],
-      startEnergy: 180, energyPerSec: 1.2,
+      startEnergy: 215, energyPerSec: 8.6,
     },
     rewardCredits: 780,
   },
@@ -322,17 +338,16 @@ export const CAMPAIGN: CampaignChapter[] = [
     enemyTitle: '小惑星帯の破壊者',
     background: '小惑星をくだいて宇宙をちらかす、あばれんぼうのネコ。岩と沼のふくざつな地形を、自分の庭のように使いこなす。',
     briefing: '岩・沼・砲台、ぜんぶある。どのルートが一番はやいか考えよう。',
-    hint: '飛行系は壁も岩も気にしない。ただし砲台からはかくれられない。',
+    hint: '砲台の射程はとても長い。ネコを選んでから敵をタップすると、その敵だけを集中してねらえるよ。',
     victoryLine: 'ちらかった小惑星帯に、しずかな星の光がもどった。',
     defeatLine: 'ルートを変えるか、部隊の組み合わせを変えてみよう。',
     mapId: 'map-cliffs',
     difficulty: {
       enemyHpMult: 1.2, enemyDamageMult: 1.15,
       defenseDamageMult: 1.2, defenseHpMult: 1.15,
-      // 健在なら 3.7 + 金山0.5 + キャンプ1.2×2 + 兵舎1.0 = 7.6/秒
-      firstSpawnDelayMs: 7000, enemySpawnRatePerSec: 3.7,
+      firstSpawnDelayMs: 5000, enemySpawnRatePerSec: 15.4,
       unitPool: ['grunt', 'shooter', 'runner', 'flyer'],
-      startEnergy: 170, energyPerSec: 1.15,
+      startEnergy: 210, energyPerSec: 8.8,
     },
     rewardCredits: 920,
   },
@@ -343,18 +358,23 @@ export const CAMPAIGN: CampaignChapter[] = [
     enemyTitle: '銀河皇帝',
     background: '黒いマントをまとった銀河の支配者。三重の防衛線をもつ最終要塞シタデルの奥で、じっとこちらを見つめている。',
     briefing: '砲台も電撃トラップもいちばん多い。あわてずに、少しずつ防衛をけずっていこう。',
-    hint: 'とちゅうで「皇帝の親衛隊」が出てくる。ヒール・レイジは、そこまで残しておこう。',
+    hint: '「めかにゃー」は砲台よりも射程が長い。撃たれずに砲台をつぶせる唯一のネコだ。',
     victoryLine: '銀河にへいわがもどった。きみとネコ軍団の伝説がはじまる。',
     defeatLine: 'ここまで来たらもう一息。⚡をためてから一気に攻めこもう。',
     mapId: 'map-citadel',
     difficulty: {
       enemyHpMult: 1.3, enemyDamageMult: 1.2,
-      defenseDamageMult: 1.3, defenseHpMult: 1.25,
-      // 健在なら 3.1 + 金山0.5×2 + キャンプ1.2×2 + 兵舎1.0×2 = 8.5/秒
-      firstSpawnDelayMs: 6500, enemySpawnRatePerSec: 3.1,
+      // 防衛施設が最多の章なので、HP倍率は上げない（威力だけで難しさを出す）
+      defenseDamageMult: 1.3, defenseHpMult: 1.0,
+      firstSpawnDelayMs: 4500, enemySpawnRatePerSec: 12.1,
       unitPool: ['grunt', 'shooter', 'brute', 'flyer'],
-      bossAtSpawnCount: 9,
-      startEnergy: 180, energyPerSec: 1.2,
+      // 増援ペースを上げるたびに、体数で指定したボス出現がどんどん早まる
+      // （旧: 10秒間隔×9体=約90秒 → 2秒間隔×9体=約20秒 → 1.4秒間隔×45体=約68秒）。
+      // 「終盤に1回だけ割りこむ」という元の意図に合わせて引き直した。
+      // 現在のペース（施設健在で1.41秒/体）なら 4.5秒 + 70体 ≒ 開始103秒。
+      // 生産施設をこわして増援を止めるほどボスも遅れて来る＝攻略のごほうびになる。
+      bossAtSpawnCount: 70,
+      startEnergy: 210, energyPerSec: 9.0,
     },
     rewardCredits: 1200,
   },

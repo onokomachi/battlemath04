@@ -62,24 +62,33 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, baseReward = 34, onRe
   const problemReward = Math.round(baseReward * multiplier);
   const tier = rewardTierLabel(multiplier);
 
+  /**
+   * コンボ倍率。連続正解でどんどん増えるが、上限を設けて青天井にはしない。
+   * 1問目=1.0倍 / 2連続=1.2倍 / 3連続=1.4倍 …… 上限2.0倍（9連続）。
+   * 「続けて解くほど得」を分かりやすくしつつ、1問の重み付け（難易度×工程）が
+   * 意味を失わない範囲に収めている。
+   */
+  const comboMultiplier = (n: number): number => Math.min(2.0, 1 + (n - 1) * 0.2);
+  const nextMultiplier = comboMultiplier(combo + 1);
+
   const grant = useCallback((correct: boolean) => {
     if (correct) {
       const newCombo = combo + 1;
-      const bonus = newCombo % 3 === 0 ? problemReward : 0; // 3連続ごとにボーナス
-      const total = problemReward + bonus;
+      const total = Math.round(problemReward * comboMultiplier(newCombo));
       setCombo(newCombo);
       setGained(total);
       setFeedback('correct');
       sfx.correct();
       onReward(total);
-      setTimeout(() => { setGained(0); nextProblem(); }, 750);
+      // 自動で次へ進めず、「つぎの問題へ」を押してもらう。
+      // 戦況が透けて見えるので、続けて解くか戦場に戻るかを自分で選べる。
     } else {
       setCombo(0);
       setFeedback('wrong');
       sfx.incorrect();
       setTimeout(() => setFeedback(null), 700);
     }
-  }, [combo, problemReward, onReward, nextProblem]);
+  }, [combo, problemReward, onReward]);
 
   const submit = useCallback(() => {
     if (!problem || feedback === 'correct') return;
@@ -98,17 +107,22 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, baseReward = 34, onRe
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') submit();
+      // 正解表示中の Enter は「つぎの問題へ」として働く（テンポよく連続で解ける）
+      if (e.key === 'Enter') { if (feedback === 'correct') nextProblem(); else submit(); }
       else if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [submit, onClose]);
+  }, [submit, onClose, feedback, nextProblem]);
 
   return (
-    <div className="fixed inset-0 z-[140] flex flex-col" style={{ background: 'rgba(3,6,16,0.94)', backdropFilter: 'blur(8px)' }}>
-      {/* Header */}
-      <div className="flex items-center gap-3 p-3 border-b border-[#facc15]/25">
+    // ⑥ 背景をかなり薄くして、戦況が透けて見えるようにする。
+    // 解いているあいだも戦場が進むので、「まだ解くか／もどるか」を自分で判断できる。
+    <div className="fixed inset-0 z-[140] flex flex-col"
+      style={{ background: 'rgba(3,6,16,0.34)', backdropFilter: 'blur(1.5px)' }}>
+      {/* Header（背景が透過したので、ヘッダー自体は不透明にして読めるようにする） */}
+      <div className="flex items-center gap-3 p-3 border-b border-[#facc15]/25"
+        style={{ background: 'rgba(3,6,16,0.92)' }}>
         <span className="text-[#facc15] font-bold text-sm" style={{ fontFamily: 'Orbitron, monospace' }}>⚡ エナジーチャージ</span>
         {combo > 0 && (
           <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/40">
@@ -137,7 +151,8 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, baseReward = 34, onRe
           </div>
         ) : (
           <div className={`w-full max-w-2xl rounded-2xl p-4 border transition-all ${feedback === 'wrong' ? 'vfx-shake border-red-500/60' : feedback === 'correct' ? 'border-[#a3e635]/70' : 'border-[#facc15]/30'}`}
-            style={{ background: 'rgba(10,14,26,0.85)' }}>
+            // 問題のカードだけは、背景を透かさずしっかり読めるようにする
+            style={{ background: 'rgba(8,12,22,0.97)', boxShadow: '0 12px 48px rgba(0,0,0,0.7)' }}>
             {/* Question */}
             <div className="text-center text-white text-lg sm:text-xl font-mono mb-3">
               <FractionText text={problemData?.question || problemData?.questionText || '問題'} />
@@ -148,13 +163,29 @@ export const InBattleQuiz: React.FC<Props> = ({ subtopics, baseReward = 34, onRe
             </div>
 
             {feedback === 'correct' && (
-              <div className="text-center text-[#a3e635] font-black text-lg mb-2 animate-level-up-reveal">
-                ✓ 正解！ +{gained}⚡
+              <div className="text-center mb-3 animate-level-up-reveal">
+                <div className="text-[#a3e635] font-black text-xl">✓ 正解！ +{gained}⚡</div>
+                {combo >= 2 && (
+                  <div className="text-[#facc15] font-black text-sm mt-1">
+                    🔥 {combo}コンボ！ ×{comboMultiplier(combo).toFixed(1)} ボーナス
+                  </div>
+                )}
+                <button
+                  onClick={nextProblem}
+                  autoFocus
+                  className="w-full max-w-sm mx-auto mt-3 py-3 rounded-xl font-black text-lg text-white transition-all active:scale-95 block"
+                  style={{ background: 'rgba(163,230,53,0.22)', border: '2px solid #a3e635', color: '#a3e635' }}
+                >
+                  つぎの問題へ →{combo >= 1 ? `（つぎは ×${nextMultiplier.toFixed(1)}）` : ''}
+                </button>
+                <div className="text-white/40 text-[11px] mt-2">
+                  つづけて解くほど ボーナスが ふえるよ（さいだい ×2.0）
+                </div>
               </div>
             )}
 
-            {/* Answer UI */}
-            {problemType === 'guided' ? (
+            {/* Answer UI（正解したら隠し、「つぎの問題へ」だけを残す） */}
+            {feedback === 'correct' ? null : problemType === 'guided' ? (
               <GuidedAnswerHost key={idxRef.current} problem={problem}
                 onComplete={(isCorrect) => grant(isCorrect)} />
             ) : Array.isArray(problemData?.options) ? (

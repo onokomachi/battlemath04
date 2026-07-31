@@ -548,7 +548,9 @@ export const BattleScene: React.FC<Props> = ({
   const deployCooldownLeftMs = (troopId: string): number => {
     const last = simState.players[localPlayer].deployCd[troopId];
     if (last === undefined) return 0;
-    const cdTicks = Math.max(1, Math.round(runner.cfg.deployCooldownMs[localPlayer] / TICK_MS));
+    const cdMs = runner.cfg.unitStats[localPlayer][troopId]?.cooldownMs
+      ?? runner.cfg.deployCooldownMs[localPlayer];
+    const cdTicks = Math.max(1, Math.round(cdMs / TICK_MS));
     const leftTicks = cdTicks - (simState.tick - last);
     return Math.max(0, leftTicks * TICK_MS);
   };
@@ -656,6 +658,15 @@ export const BattleScene: React.FC<Props> = ({
            0%, 100% { transform: translateY(0) rotate(-3deg); }
            50% { transform: translateY(-5px) rotate(3deg); }
          }
+         @keyframes cw-quiz-idle {
+           0%, 100% { transform: scale(1); }
+           50% { transform: scale(1.06); }
+         }
+         @keyframes cw-quiz-urgent {
+           0%, 100% { transform: scale(1) rotate(0deg); }
+           25% { transform: scale(1.12) rotate(-4deg); }
+           75% { transform: scale(1.12) rotate(4deg); }
+         }
          @keyframes cw-meteor-warn {
            0%, 100% { opacity: 0.30; transform: scale(0.9); }
            50% { opacity: 0.75; transform: scale(1.04); }
@@ -721,15 +732,6 @@ export const BattleScene: React.FC<Props> = ({
           </div>
           
           <div className="flex gap-2">
-            {quizSubtopics.length > 0 && (
-              <button
-                onClick={() => { setBattlePaused(true); setQuizOpen(true); }}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#22d3ee]/50 bg-[#22d3ee]/10 text-[#22d3ee] text-xs font-bold animate-pulse"
-                style={{ fontFamily: 'Orbitron, monospace' }}
-              >
-                📚 といて⚡
-              </button>
-            )}
             <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#facc15]/50 bg-[#facc15]/10"
               style={{ fontFamily: 'Orbitron, monospace' }}>
               <span className="text-base">⚡</span>
@@ -740,6 +742,44 @@ export const BattleScene: React.FC<Props> = ({
             </Button>
           </div>
        </div>
+
+       {/* ④ 「といて⚡」を大きな浮かぶボタンにする。
+           絶対配置なのでレイアウトの高さを一切食わず、画面を圧迫しないまま
+           いちばん押してほしい行動をいちばん目立たせられる。
+           ⚡が少ないときは色と文言が変わり、「いま解くべき」ことが伝わる。 */}
+       {quizSubtopics.length > 0 && !battleResult && (() => {
+         const cheapest = runner.cfg.minTroopCost[localPlayer];
+         const poor = Math.floor(gold) < cheapest;
+         return (
+           <button
+             onClick={() => { setBattlePaused(true); setQuizOpen(true); }}
+             className="absolute z-[60] flex flex-col items-center justify-center rounded-full shadow-2xl active:scale-95 transition-transform"
+             style={{
+               // 右下はズーム操作(＋/−/リセット)が居るので、左下に置いて重なりを避ける
+               left: 16,
+               bottom: 150,
+               width: 92, height: 92,
+               background: poor
+                 ? 'radial-gradient(circle at 30% 25%, #fde68a, #f59e0b 70%)'
+                 : 'radial-gradient(circle at 30% 25%, #67e8f9, #0891b2 70%)',
+               border: `3px solid ${poor ? '#fff7ed' : '#a5f3fc'}`,
+               boxShadow: poor
+                 ? '0 0 26px rgba(245,158,11,0.85), 0 6px 18px rgba(0,0,0,0.55)'
+                 : '0 0 22px rgba(34,211,238,0.65), 0 6px 18px rgba(0,0,0,0.55)',
+               animation: poor ? 'cw-quiz-urgent 1s ease-in-out infinite' : 'cw-quiz-idle 2.6s ease-in-out infinite',
+             }}
+           >
+             <span className="text-3xl leading-none drop-shadow">📚</span>
+             <span className="text-[13px] font-black text-white leading-tight mt-0.5"
+               style={{ fontFamily: 'Orbitron, monospace', textShadow: '0 1px 3px rgba(0,0,0,0.6)' }}>
+               といて⚡
+             </span>
+             <span className="text-[9px] font-bold text-white/90 leading-none">
+               {poor ? 'エナジー不足！' : 'ためる'}
+             </span>
+           </button>
+         );
+       })()}
 
        {/* Temporary visual dynamic notification banner inside combat */}
        {triggerMessage && (
@@ -1165,9 +1205,18 @@ export const BattleScene: React.FC<Props> = ({
                             } : {}),
                         }}
                         onClick={(ev) => {
+                          // 自軍のネコ → 選択（もう一度押すと解除）
                           if (e.team === 'ATTACKER' && e.type === 'TROOP') {
                             ev.stopPropagation();
                             setSelectedOrderTroopId(prev => prev === e.id ? null : e.id);
+                            return;
+                          }
+                          // ⑤ ネコを選んだ状態で敵（キャラ・施設）をタップ → そいつを狙わせる。
+                          // 「どこへ行くか」だけでなく「なにを狙うか」を指示できるようにする。
+                          if (selectedOrderTroopId && e.team !== 'ATTACKER' && e.team !== 'ATTACKER_BUILDING') {
+                            ev.stopPropagation();
+                            issue({ type: 'FOCUS', player: localPlayer, entityId: selectedOrderTroopId, targetId: e.id });
+                            setSelectedOrderTroopId(null);
                           }
                         }}
                     >
@@ -1285,19 +1334,15 @@ export const BattleScene: React.FC<Props> = ({
                                     {label}
                                   </button>
                                 ))}
-                                {/* Move-to: clicking map will redirect this troop */}
-                                <button
-                                  className="px-2 py-1 text-[10px] font-black rounded-lg text-white"
-                                  style={{
-                                    background: 'rgba(10,14,26,0.95)',
-                                    border: '1px solid #a78bfa',
-                                    color: '#a78bfa',
-                                    whiteSpace: 'nowrap',
-                                    animation: 'glow-pulse-cyan 1s ease-in-out infinite',
-                                  }}
-                                >
-                                  📍移動先タップ
-                                </button>
+                                {/* ⑤ 旧「📍移動先タップ」ボタンは撤去した。
+                                    onClick を持たないただのラベルで、実際には
+                                    「ネコを選ぶ → 行き先をタップ」で既に動いていたため、
+                                    押す必要のないボタンが並んでいるだけだった。
+                                    いまは操作の説明だけを出す。 */}
+                                <span className="px-2 py-1 text-[10px] font-black rounded-lg whitespace-nowrap"
+                                  style={{ background: 'rgba(10,14,26,0.95)', border: '1px solid #a78bfa', color: '#a78bfa' }}>
+                                  📍行き先/敵をタップ
+                                </span>
                               </div>
                             )}
                           </div>

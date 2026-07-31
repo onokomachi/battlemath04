@@ -28,6 +28,8 @@ export type PlayerId = 'P1' | 'P2';
 export type SimCommand =
   | { type: 'DEPLOY'; player: PlayerId; troopId: string; x: number; y: number }
   | { type: 'MOVE_TO'; player: PlayerId; entityId: string; x: number; y: number }
+  /** 敵（キャラ・施設）を名指しして「こいつを狙え」と指示する */
+  | { type: 'FOCUS'; player: PlayerId; entityId: string; targetId: string }
   | { type: 'SET_ORDER'; player: PlayerId; entityId: string; order: 'RUSH' | 'DEFENSE' | 'HOLD' }
   | { type: 'CAST_SPELL'; player: PlayerId; spell: 'HEAL' | 'RAGE'; x: number; y: number }
   | { type: 'BUILD'; player: PlayerId; building: BuildingType; x: number; y: number }
@@ -126,6 +128,12 @@ export interface SimState {
   hadEnemyBuildings: boolean;
   /** 開幕時に自軍コアが存在したか（敗北条件の判定） */
   hadPlayerTownHall: boolean;
+  /**
+   * 「手駒ゼロかつ最安ネコも買えない」状態が続き始めた tick（-1 = 継続していない）。
+   * 一瞬でもこの状態になったら即敗北、にすると理不尽なので、
+   * 一定時間続いたときだけ「手詰まり」とみなす。
+   */
+  stalledSinceTick: number;
 }
 
 /**
@@ -150,7 +158,10 @@ export interface SimConfig {
   energyPerSec: Record<PlayerId, number>;
   /** 開始⚡。バフ適用ずみ */
   startEnergy: Record<PlayerId, number>;
-  /** 出撃クールダウン(ms)。バフ適用ずみ */
+  /**
+   * 出撃クールダウンの基準値(ms)。実際の待ち時間はキャラごとに違い、
+   * `unitStats[player][troopId].cooldownMs` を使う。こちらは表示・後方互換用。
+   */
   deployCooldownMs: Record<PlayerId, number>;
   /** 出撃コストの倍率（COST_REDUCTIONバフ適用ずみ） */
   costMult: Record<PlayerId, number>;
@@ -167,6 +178,10 @@ export interface UnitStatLine {
   attackSpeed: number;
   moveSpeed: number;
   cost: number;
+  /** このキャラの再出撃までの待ち時間(ms)。FAST_DEPLOYバフ適用ずみ */
+  cooldownMs: number;
+  /** 建物に当てたときのダメージ倍率（攻城役ほど大きい） */
+  buildingDamageMult: number;
   target: BattleEntity['targetPreference'];
 }
 
